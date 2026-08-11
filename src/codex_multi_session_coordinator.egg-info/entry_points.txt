@@ -1,2 +1,0 @@
-[console_scripts]
-codex-coordinator = codex_multi_session_coordinator.cli:main

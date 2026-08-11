@@ -2,6 +2,7 @@
 __pycache__/
 .pytest_cache/
 *.py[cod]
+*.egg-info/
 node_modules/
 cdk.out/
 .DS_Store
