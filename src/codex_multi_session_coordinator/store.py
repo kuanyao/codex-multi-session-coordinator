@@ -184,6 +184,10 @@ class CoordinatorStore:
             "requests": sorted((self._redact(item) for item in items if item["record_id"].startswith("REQUEST#")), key=lambda item: item.get("created_at", 0)),
         }
 
+    def current_lease(self, scope: str) -> dict[str, Any] | None:
+        """Return the raw lease for an authorization check; never print this directly."""
+        return self._get(scope, "LEASE")
+
     @staticmethod
     def _redact(item: dict[str, Any]) -> dict[str, Any]:
         safe = dict(item)

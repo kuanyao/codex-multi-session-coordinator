@@ -98,8 +98,10 @@ def main() -> int:
             command = args.command_args[1:] if args.command_args[:1] == ["--"] else args.command_args
             if not command:
                 raise CoordinationError("guard requires a command after --")
-            lease = store.status(args.scope).get("lease") or {}
-            if lease.get("state") != "held" or lease.get("owner_id") != args.actor_id or lease.get("lease_token") != args.lease_token:
+            lease = store.current_lease(args.scope) or {}
+            if (lease.get("state") != "held" or lease.get("owner_id") != args.actor_id
+                    or lease.get("lease_token") != args.lease_token
+                    or int(lease.get("expires_at", 0)) <= int(time.time())):
                 raise CoordinationError("guard denied: lease is not held by this actor")
             result = subprocess.run(command, check=False)
             return result.returncode
