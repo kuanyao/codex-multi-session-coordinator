@@ -83,16 +83,29 @@ class CoordinatorStore:
         timestamp = now()
         self.table.update_item(
             Key={"scope": scope, "record_id": role_key},
-            UpdateExpression="SET last_seen_at = :seen, #phase = :phase, #message = :message, #state = :state, ttl = :ttl",
-            ExpressionAttributeNames={"#phase": "phase", "#message": "message", "#state": "state"},
-            ExpressionAttributeValues={":seen": timestamp, ":phase": phase, ":message": message, ":state": "active", ":ttl": timestamp + 86400},
-            ConditionExpression="token = :token",
+            UpdateExpression="SET last_seen_at = :seen, #phase = :phase, #message = :message, #state = :state, #ttl = :ttl",
+            ExpressionAttributeNames={
+                "#phase": "phase",
+                "#message": "message",
+                "#state": "state",
+                "#token": "token",
+                "#ttl": "ttl",
+            },
+            ExpressionAttributeValues={
+                ":seen": timestamp,
+                ":phase": phase,
+                ":message": message,
+                ":state": "active",
+                ":ttl": timestamp + 86400,
+                ":token": token,
+            },
+            ConditionExpression="#token = :token",
         )
         if lease_token:
             self.table.update_item(
                 Key={"scope": scope, "record_id": "LEASE"},
                 UpdateExpression="SET last_heartbeat_at = :seen",
-                ExpressionAttributeValues={":seen": timestamp, ":token": lease_token, ":owner": actor_id},
+                ExpressionAttributeValues={":seen": timestamp, ":token": lease_token, ":owner": actor_id, ":held": "held"},
                 ConditionExpression="lease_token = :token AND owner_id = :owner AND #state = :held",
                 ExpressionAttributeNames={"#state": "state"},
             )
