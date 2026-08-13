@@ -152,6 +152,33 @@ also proves that the lease is held by the actor and has not expired. The registr
 heartbeat timestamps update atomically. An expired held lease is not renewed and neither timestamp
 advances; the command instead reports that explicit coordinator recovery is required.
 
+## Extend a current lease
+
+Worker heartbeat never renews a lease. Before expiry, only the current coordinator can extend the
+same held lease. The caller supplies the complete status identity as compare-and-swap inputs; the
+operation refuses expired, free, recovery, changed-identity, stale-token, and replaced-generation
+cases. Durations are measured from the operation time, must move `expires_at` forward, and are
+bounded to 60 through 86400 seconds.
+
+```bash
+./.venv/bin/codex-coordinator extend \
+  --coordinator-id <coordinator-task-id> \
+  --coordinator-token <coordinator-registration-token> \
+  --coordinator-generation <coordinator-generation> \
+  --owner-id <current-owner-id> \
+  --request-id <current-request-id> \
+  --fencing <current-fencing> \
+  --expected-expires-at <current-expires-at> \
+  --ttl-seconds 21600 \
+  --reason "active integration repair cannot safely finish before expiry" \
+  --evidence '{"external_state":"contained","queue_checked":true}'
+```
+
+The transaction checks the current coordinator token/generation, granted request, and exact held
+lease identity. It changes only lease expiry and last-extension audit pointers, and writes an
+append-only `EXTENSION#...` record. It does not change owner, request, fencing, grant time, request
+state/order, or worker heartbeat time. Re-read status after success and verify those invariants.
+
 Release only after the coordinator policy says the shared environment is safe:
 
 ```bash
@@ -207,3 +234,42 @@ After inspecting the environment, explicitly clear the block with evidence:
 ```
 
 There is no automatic takeover based only on expiry.
+
+If the same transaction owner must continue after expiry, do not use `complete-recovery`, which
+makes the lease free. First verify external containment, then atomically enter recovery with the
+complete prior identity:
+
+```bash
+./.venv/bin/codex-coordinator recover-exact \
+  --coordinator-id <coordinator-task-id> \
+  --coordinator-token <coordinator-registration-token> \
+  --coordinator-generation <coordinator-generation> \
+  --owner-id <current-owner-id> \
+  --request-id <current-request-id> \
+  --fencing <current-fencing> \
+  --expected-expires-at <expired-expires-at> \
+  --reason "expired while the same transaction retained contained recovery responsibility" \
+  --evidence '{"external_state":"contained","queued_request_untouched":true}'
+```
+
+After re-reading status and confirming `recovery_required` with the identical owner/request/fence,
+resume that same granted request:
+
+```bash
+./.venv/bin/codex-coordinator resume-recovery \
+  --coordinator-id <coordinator-task-id> \
+  --coordinator-token <coordinator-registration-token> \
+  --coordinator-generation <coordinator-generation> \
+  --owner-id <current-owner-id> \
+  --request-id <current-request-id> \
+  --fencing <current-fencing> \
+  --expected-expires-at <expired-expires-at> \
+  --ttl-seconds 21600 \
+  --reason "same owner must repair and finish the interrupted transaction" \
+  --evidence '{"external_state":"contained","recovery_reviewed":true}'
+```
+
+The resume transaction preserves owner, request, original grant time, and queue order; increments
+fencing; rotates the lease token; updates the granted request with the new fence/token; and writes
+an append-only `RECOVERY_RESUME#...` audit record. The coordinator must deliver the new token and
+fencing value privately to the same worker. The prior token/fence remains invalid.

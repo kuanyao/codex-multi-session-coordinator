@@ -19,6 +19,8 @@ All records use `scope` as the partition key and `record_id` as the sort key:
 - `WORKER#<actor-id>`: worker registration and latest durable status.
 - `REQUEST#<request-id>`: queued or granted request with bounded metadata.
 - `LEASE`: current state, owner, opaque lease token, fencing number, phase, expiry, and evidence.
+- `EXTENSION#<id>`, `RECOVERY#<id>`, and `RECOVERY_RESUME#<id>`: append-only evidence for
+  coordinator-authorized continuity transitions.
 
 The table uses on-demand capacity, AWS-managed encryption, point-in-time recovery, and TTL for
 registration/request cleanup. TTL is not used to authorize lease takeover.
@@ -31,6 +33,12 @@ current owner and exact lease token. Lease-bearing heartbeat and guarded command
 an unexpired lease. Their checks use the same fail-closed authorization semantics. A lease-bearing
 heartbeat updates the registration and lease atomically, so an expired attempt advances neither record.
 A stale worker cannot release a replacement lease.
+
+Worker heartbeat is intentionally non-renewing. A bounded pre-expiry extension atomically pins the
+current coordinator token/generation, granted request, lease owner/request/fencing, and expected
+expiry. It changes only expiry plus audit pointers. Post-expiry continuity requires explicit exact
+recovery and recovery resumption; resumption retains the granted request and owner while rotating
+the token and incrementing fencing, so queued requests cannot overtake the interrupted transaction.
 
 Coordinator replacement is deliberate. The new coordinator can inspect the old lease and put it into
 explicit recovery. It cannot silently take over a held lease merely because its expiration time has

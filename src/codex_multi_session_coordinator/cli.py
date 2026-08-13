@@ -84,6 +84,17 @@ def parser() -> argparse.ArgumentParser:
     grant.add_argument("--coordinator-token", required=True)
     grant.add_argument("--request-id", required=True)
     grant.add_argument("--ttl-seconds", type=int, default=3600)
+    extend = command_parser(commands, "extend")
+    extend.add_argument("--coordinator-id", required=True)
+    extend.add_argument("--coordinator-token", required=True)
+    extend.add_argument("--coordinator-generation", required=True)
+    extend.add_argument("--owner-id", required=True)
+    extend.add_argument("--request-id", required=True)
+    extend.add_argument("--fencing", type=int, required=True)
+    extend.add_argument("--expected-expires-at", type=int, required=True)
+    extend.add_argument("--ttl-seconds", type=int, required=True)
+    extend.add_argument("--reason", required=True)
+    extend.add_argument("--evidence", default="{}")
     release = command_parser(commands, "release")
     release.add_argument("--actor-id", required=True)
     release.add_argument("--lease-token", required=True)
@@ -93,10 +104,31 @@ def parser() -> argparse.ArgumentParser:
     recover.add_argument("--coordinator-id", required=True)
     recover.add_argument("--coordinator-token", required=True)
     recover.add_argument("--reason", required=True)
+    recover_exact = command_parser(commands, "recover-exact")
+    recover_exact.add_argument("--coordinator-id", required=True)
+    recover_exact.add_argument("--coordinator-token", required=True)
+    recover_exact.add_argument("--coordinator-generation", required=True)
+    recover_exact.add_argument("--owner-id", required=True)
+    recover_exact.add_argument("--request-id", required=True)
+    recover_exact.add_argument("--fencing", type=int, required=True)
+    recover_exact.add_argument("--expected-expires-at", type=int, required=True)
+    recover_exact.add_argument("--reason", required=True)
+    recover_exact.add_argument("--evidence", default="{}")
     complete_recovery = command_parser(commands, "complete-recovery")
     complete_recovery.add_argument("--coordinator-id", required=True)
     complete_recovery.add_argument("--coordinator-token", required=True)
     complete_recovery.add_argument("--evidence", default="{}")
+    resume_recovery = command_parser(commands, "resume-recovery")
+    resume_recovery.add_argument("--coordinator-id", required=True)
+    resume_recovery.add_argument("--coordinator-token", required=True)
+    resume_recovery.add_argument("--coordinator-generation", required=True)
+    resume_recovery.add_argument("--owner-id", required=True)
+    resume_recovery.add_argument("--request-id", required=True)
+    resume_recovery.add_argument("--fencing", type=int, required=True)
+    resume_recovery.add_argument("--expected-expires-at", type=int, required=True)
+    resume_recovery.add_argument("--ttl-seconds", type=int, required=True)
+    resume_recovery.add_argument("--reason", required=True)
+    resume_recovery.add_argument("--evidence", default="{}")
     status = command_parser(commands, "status")
     status.add_argument("--pretty", action="store_true")
     guard = command_parser(commands, "guard")
@@ -130,12 +162,53 @@ def main() -> int:
             output({"request_id": request_id}, True)
         elif args.command == "grant":
             output(store.grant(args.scope, args.coordinator_id, args.coordinator_token, args.request_id, args.ttl_seconds), True)
+        elif args.command == "extend":
+            output(store.extend(
+                args.scope,
+                args.coordinator_id,
+                args.coordinator_token,
+                args.coordinator_generation,
+                args.owner_id,
+                args.request_id,
+                args.fencing,
+                args.expected_expires_at,
+                args.ttl_seconds,
+                args.reason,
+                json.loads(args.evidence),
+            ), True)
         elif args.command == "release":
             output(store.release(args.scope, args.actor_id, args.lease_token, args.phase, json.loads(args.evidence)), args.json)
         elif args.command == "recover":
             output(store.recover(args.scope, args.coordinator_id, args.coordinator_token, args.reason), args.json)
+        elif args.command == "recover-exact":
+            output(store.recover_exact(
+                args.scope,
+                args.coordinator_id,
+                args.coordinator_token,
+                args.coordinator_generation,
+                args.owner_id,
+                args.request_id,
+                args.fencing,
+                args.expected_expires_at,
+                args.reason,
+                json.loads(args.evidence),
+            ), True)
         elif args.command == "complete-recovery":
             output(store.complete_recovery(args.scope, args.coordinator_id, args.coordinator_token, json.loads(args.evidence)), args.json)
+        elif args.command == "resume-recovery":
+            output(store.resume_recovery(
+                args.scope,
+                args.coordinator_id,
+                args.coordinator_token,
+                args.coordinator_generation,
+                args.owner_id,
+                args.request_id,
+                args.fencing,
+                args.expected_expires_at,
+                args.ttl_seconds,
+                args.reason,
+                json.loads(args.evidence),
+            ), True)
         elif args.command == "status":
             output(store.status(args.scope), True, args.pretty)
         elif args.command == "guard":

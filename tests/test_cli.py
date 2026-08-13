@@ -81,6 +81,49 @@ def test_heartbeat_accepts_state_as_phase_alias() -> None:
     assert arguments.phase == "waiting"
 
 
+def test_extend_requires_complete_compare_and_swap_identity() -> None:
+    arguments = parser().parse_args([
+        "extend",
+        "--coordinator-id", "coord-a",
+        "--coordinator-token", "token-a",
+        "--coordinator-generation", "generation-a",
+        "--owner-id", "worker-a",
+        "--request-id", "request-a",
+        "--fencing", "16",
+        "--expected-expires-at", "200",
+        "--ttl-seconds", "21600",
+        "--reason", "repair needs more time",
+        "--evidence", '{"ecs":"contained"}',
+    ])
+
+    assert arguments.command == "extend"
+    assert arguments.fencing == 16
+    assert arguments.expected_expires_at == 200
+    assert arguments.ttl_seconds == 21600
+
+
+def test_exact_recovery_commands_parse_complete_identity() -> None:
+    common = [
+        "--coordinator-id", "coord-a",
+        "--coordinator-token", "token-a",
+        "--coordinator-generation", "generation-a",
+        "--owner-id", "worker-a",
+        "--request-id", "request-a",
+        "--fencing", "16",
+        "--expected-expires-at", "200",
+        "--reason", "contained recovery",
+        "--evidence", '{"ecs":"contained"}',
+    ]
+    recover = parser().parse_args(["recover-exact", *common])
+    resume = parser().parse_args([
+        "resume-recovery", *common, "--ttl-seconds", "21600",
+    ])
+
+    assert recover.command == "recover-exact"
+    assert resume.command == "resume-recovery"
+    assert resume.ttl_seconds == 21600
+
+
 def test_guard_accepts_global_options_after_subcommand() -> None:
     arguments = parser().parse_args([
         "guard",

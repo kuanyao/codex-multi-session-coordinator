@@ -15,6 +15,10 @@ class CoordinationError(RuntimeError):
     """A caller-visible coordination failure."""
 
 
+MIN_LEASE_TTL_SECONDS = 60
+MAX_LEASE_TTL_SECONDS = 86400
+
+
 @dataclass(frozen=True)
 class Registration:
     scope: str
@@ -40,6 +44,14 @@ class CoordinatorStore:
 
     def _get(self, scope: str, key: str) -> dict[str, Any] | None:
         return self.table.get_item(Key={"scope": scope, "record_id": key}).get("Item")
+
+    @staticmethod
+    def _validate_lease_ttl(ttl_seconds: int) -> None:
+        if not MIN_LEASE_TTL_SECONDS <= ttl_seconds <= MAX_LEASE_TTL_SECONDS:
+            raise CoordinationError(
+                f"lease duration must be between {MIN_LEASE_TTL_SECONDS} and "
+                f"{MAX_LEASE_TTL_SECONDS} seconds"
+            )
 
     def register(self, scope: str, actor_id: str, role: str, title: str) -> Registration:
         if role not in {"worker", "coordinator"}:
@@ -156,6 +168,7 @@ class CoordinatorStore:
         return request_id
 
     def grant(self, scope: str, coordinator_id: str, coordinator_token: str, request_id: str, ttl_seconds: int) -> dict[str, Any]:
+        self._validate_lease_ttl(ttl_seconds)
         coordinator = self._get(scope, "COORDINATOR")
         request = self._get(scope, record_id("REQUEST", request_id))
         lease = self._get(scope, "LEASE")
@@ -191,6 +204,273 @@ class CoordinatorStore:
         except client.exceptions.TransactionCanceledException as exc:
             raise CoordinationError("grant conflicted with a changed coordinator, request, or lease") from exc
         return lease_item
+
+    def extend(
+        self,
+        scope: str,
+        coordinator_id: str,
+        coordinator_token: str,
+        coordinator_generation: str,
+        owner_id: str,
+        request_id: str,
+        fencing: int,
+        expected_expires_at: int,
+        ttl_seconds: int,
+        reason: str,
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Extend one current, unexpired lease without changing its ownership identity."""
+        self._validate_lease_ttl(ttl_seconds)
+        if not reason.strip():
+            raise CoordinationError("extension reason is required")
+        if not isinstance(evidence, dict):
+            raise CoordinationError("extension evidence must be a JSON object")
+        coordinator = self._get(scope, "COORDINATOR")
+        lease = self._get(scope, "LEASE")
+        request = self._get(scope, record_id("REQUEST", request_id))
+        if (
+            not coordinator
+            or coordinator.get("actor_id") != coordinator_id
+            or coordinator.get("token") != coordinator_token
+            or coordinator.get("generation") != coordinator_generation
+        ):
+            raise CoordinationError("coordinator registration token or generation is stale")
+        if not lease or lease.get("state") != "held":
+            raise CoordinationError("lease is missing or not held; extension is not allowed")
+        if (
+            lease.get("owner_id") != owner_id
+            or lease.get("request_id") != request_id
+            or int(lease.get("fencing", -1)) != fencing
+            or int(lease.get("expires_at", -1)) != expected_expires_at
+        ):
+            raise CoordinationError("lease identity or expected expiry changed; extension refused")
+        if not request or request.get("state") != "granted" or request.get("actor_id") != owner_id:
+            raise CoordinationError("granted request identity changed; extension refused")
+        timestamp = now()
+        if expected_expires_at <= timestamp:
+            raise CoordinationError(
+                f"lease expired at {expected_expires_at}; use explicit coordinator recovery"
+            )
+        new_expires_at = timestamp + ttl_seconds
+        if new_expires_at <= expected_expires_at:
+            raise CoordinationError("requested duration does not move expires_at forward")
+        extension_id = str(uuid.uuid4())
+        audit_item = {
+            "scope": scope,
+            "record_id": record_id("EXTENSION", extension_id),
+            "extension_id": extension_id,
+            "coordinator_id": coordinator_id,
+            "coordinator_generation": coordinator_generation,
+            "owner_id": owner_id,
+            "request_id": request_id,
+            "fencing": fencing,
+            "previous_expires_at": expected_expires_at,
+            "expires_at": new_expires_at,
+            "ttl_seconds": ttl_seconds,
+            "extended_at": timestamp,
+            "reason": reason,
+            "evidence": evidence,
+        }
+        client = self.table.meta.client
+        try:
+            client.transact_write_items(TransactItems=[
+                {"ConditionCheck": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": "COORDINATOR"},
+                    "ConditionExpression": "actor_id = :actor AND #token = :token AND #generation = :generation",
+                    "ExpressionAttributeNames": {"#token": "token", "#generation": "generation"},
+                    "ExpressionAttributeValues": {
+                        ":actor": coordinator_id,
+                        ":token": coordinator_token,
+                        ":generation": coordinator_generation,
+                    },
+                }},
+                {"ConditionCheck": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": record_id("REQUEST", request_id)},
+                    "ConditionExpression": "#state = :granted AND actor_id = :owner AND fencing = :fence",
+                    "ExpressionAttributeNames": {"#state": "state"},
+                    "ExpressionAttributeValues": {
+                        ":granted": "granted",
+                        ":owner": owner_id,
+                        ":fence": fencing,
+                    },
+                }},
+                {"Update": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": "LEASE"},
+                    "UpdateExpression": (
+                        "SET #expires = :new_expires, last_extended_at = :now, "
+                        "last_extension_id = :extension_id, last_extension_reason = :reason, "
+                        "last_extension_evidence = :evidence"
+                    ),
+                    "ConditionExpression": (
+                        "#state = :held AND owner_id = :owner AND request_id = :request "
+                        "AND fencing = :fence AND #expires = :expected AND #expires > :now"
+                    ),
+                    "ExpressionAttributeNames": {"#state": "state", "#expires": "expires_at"},
+                    "ExpressionAttributeValues": {
+                        ":held": "held",
+                        ":owner": owner_id,
+                        ":request": request_id,
+                        ":fence": fencing,
+                        ":expected": expected_expires_at,
+                        ":now": timestamp,
+                        ":new_expires": new_expires_at,
+                        ":extension_id": extension_id,
+                        ":reason": reason,
+                        ":evidence": evidence,
+                    },
+                }},
+                {"Put": {
+                    "TableName": self.table_name,
+                    "Item": audit_item,
+                    "ConditionExpression": "attribute_not_exists(record_id)",
+                }},
+            ])
+        except client.exceptions.TransactionCanceledException as exc:
+            raise CoordinationError(
+                "extension conflicted with a changed coordinator, request, or lease"
+            ) from exc
+        return audit_item
+
+    def resume_recovery(
+        self,
+        scope: str,
+        coordinator_id: str,
+        coordinator_token: str,
+        coordinator_generation: str,
+        owner_id: str,
+        request_id: str,
+        fencing: int,
+        expected_expires_at: int,
+        ttl_seconds: int,
+        reason: str,
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Resume the same recovered transaction with a new token and fencing value."""
+        self._validate_lease_ttl(ttl_seconds)
+        if not reason.strip():
+            raise CoordinationError("recovery resume reason is required")
+        if not isinstance(evidence, dict):
+            raise CoordinationError("recovery resume evidence must be a JSON object")
+        coordinator = self._get(scope, "COORDINATOR")
+        lease = self._get(scope, "LEASE")
+        request = self._get(scope, record_id("REQUEST", request_id))
+        if (
+            not coordinator
+            or coordinator.get("actor_id") != coordinator_id
+            or coordinator.get("token") != coordinator_token
+            or coordinator.get("generation") != coordinator_generation
+        ):
+            raise CoordinationError("coordinator registration token or generation is stale")
+        if not lease or lease.get("state") != "recovery_required":
+            raise CoordinationError("lease is not in recovery_required state")
+        if (
+            lease.get("owner_id") != owner_id
+            or lease.get("request_id") != request_id
+            or int(lease.get("fencing", -1)) != fencing
+            or int(lease.get("expires_at", -1)) != expected_expires_at
+        ):
+            raise CoordinationError("recovery lease identity or expected expiry changed")
+        if not request or request.get("state") != "granted" or request.get("actor_id") != owner_id:
+            raise CoordinationError("granted request identity changed; recovery resume refused")
+        timestamp = now()
+        new_fencing = fencing + 1
+        new_token = str(uuid.uuid4())
+        new_expires_at = timestamp + ttl_seconds
+        resume_id = str(uuid.uuid4())
+        audit_item = {
+            "scope": scope,
+            "record_id": record_id("RECOVERY_RESUME", resume_id),
+            "resume_id": resume_id,
+            "coordinator_id": coordinator_id,
+            "coordinator_generation": coordinator_generation,
+            "owner_id": owner_id,
+            "request_id": request_id,
+            "previous_fencing": fencing,
+            "fencing": new_fencing,
+            "previous_expires_at": expected_expires_at,
+            "expires_at": new_expires_at,
+            "ttl_seconds": ttl_seconds,
+            "resumed_at": timestamp,
+            "reason": reason,
+            "evidence": evidence,
+        }
+        client = self.table.meta.client
+        try:
+            client.transact_write_items(TransactItems=[
+                {"ConditionCheck": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": "COORDINATOR"},
+                    "ConditionExpression": "actor_id = :actor AND #token = :token AND #generation = :generation",
+                    "ExpressionAttributeNames": {"#token": "token", "#generation": "generation"},
+                    "ExpressionAttributeValues": {
+                        ":actor": coordinator_id,
+                        ":token": coordinator_token,
+                        ":generation": coordinator_generation,
+                    },
+                }},
+                {"Update": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": "LEASE"},
+                    "UpdateExpression": (
+                        "SET #state = :held, lease_token = :lease, fencing = :new_fence, "
+                        "#expires = :new_expires, last_heartbeat_at = :now, resumed_at = :now, "
+                        "last_recovery_resume_id = :resume_id, recovery_resume_reason = :reason, "
+                        "recovery_resume_evidence = :evidence REMOVE recovery_reason"
+                    ),
+                    "ConditionExpression": (
+                        "#state = :recovery AND owner_id = :owner AND request_id = :request "
+                        "AND fencing = :fence AND #expires = :expected"
+                    ),
+                    "ExpressionAttributeNames": {"#state": "state", "#expires": "expires_at"},
+                    "ExpressionAttributeValues": {
+                        ":recovery": "recovery_required",
+                        ":held": "held",
+                        ":owner": owner_id,
+                        ":request": request_id,
+                        ":fence": fencing,
+                        ":new_fence": new_fencing,
+                        ":expected": expected_expires_at,
+                        ":new_expires": new_expires_at,
+                        ":lease": new_token,
+                        ":now": timestamp,
+                        ":resume_id": resume_id,
+                        ":reason": reason,
+                        ":evidence": evidence,
+                    },
+                }},
+                {"Update": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": record_id("REQUEST", request_id)},
+                    "UpdateExpression": "SET lease_token = :lease, fencing = :new_fence, resumed_at = :now",
+                    "ConditionExpression": "#state = :granted AND actor_id = :owner AND fencing = :fence",
+                    "ExpressionAttributeNames": {"#state": "state"},
+                    "ExpressionAttributeValues": {
+                        ":granted": "granted",
+                        ":owner": owner_id,
+                        ":fence": fencing,
+                        ":new_fence": new_fencing,
+                        ":lease": new_token,
+                        ":now": timestamp,
+                    },
+                }},
+                {"Put": {
+                    "TableName": self.table_name,
+                    "Item": audit_item,
+                    "ConditionExpression": "attribute_not_exists(record_id)",
+                }},
+            ])
+        except client.exceptions.TransactionCanceledException as exc:
+            raise CoordinationError(
+                "recovery resume conflicted with a changed coordinator, request, or lease"
+            ) from exc
+        return {
+            **audit_item,
+            "state": "held",
+            "lease_token": new_token,
+        }
 
     def release(self, scope: str, actor_id: str, lease_token: str, phase: str, evidence: dict[str, Any]) -> dict[str, Any]:
         lease = self._get(scope, "LEASE")
@@ -292,6 +572,123 @@ class CoordinatorStore:
         except client.exceptions.TransactionCanceledException as exc:
             raise CoordinationError("recovery conflicted with a changed coordinator or lease") from exc
         return self.status(scope)
+
+    def recover_exact(
+        self,
+        scope: str,
+        coordinator_id: str,
+        coordinator_token: str,
+        coordinator_generation: str,
+        owner_id: str,
+        request_id: str,
+        fencing: int,
+        expected_expires_at: int,
+        reason: str,
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Enter recovery only if the complete coordinator and lease identity is unchanged."""
+        if not reason.strip():
+            raise CoordinationError("recovery reason is required")
+        if not isinstance(evidence, dict):
+            raise CoordinationError("recovery evidence must be a JSON object")
+        coordinator = self._get(scope, "COORDINATOR")
+        lease = self._get(scope, "LEASE")
+        request = self._get(scope, record_id("REQUEST", request_id))
+        if (
+            not coordinator
+            or coordinator.get("actor_id") != coordinator_id
+            or coordinator.get("token") != coordinator_token
+            or coordinator.get("generation") != coordinator_generation
+        ):
+            raise CoordinationError("coordinator registration token or generation is stale")
+        if (
+            not lease
+            or lease.get("state") != "held"
+            or lease.get("owner_id") != owner_id
+            or lease.get("request_id") != request_id
+            or int(lease.get("fencing", -1)) != fencing
+            or int(lease.get("expires_at", -1)) != expected_expires_at
+        ):
+            raise CoordinationError("held lease identity or expected expiry changed")
+        if not request or request.get("state") != "granted" or request.get("actor_id") != owner_id:
+            raise CoordinationError("granted request identity changed; recovery refused")
+        timestamp = now()
+        recovery_id = str(uuid.uuid4())
+        audit_item = {
+            "scope": scope,
+            "record_id": record_id("RECOVERY", recovery_id),
+            "recovery_id": recovery_id,
+            "coordinator_id": coordinator_id,
+            "coordinator_generation": coordinator_generation,
+            "owner_id": owner_id,
+            "request_id": request_id,
+            "fencing": fencing,
+            "expires_at": expected_expires_at,
+            "recovery_at": timestamp,
+            "reason": reason,
+            "evidence": evidence,
+        }
+        client = self.table.meta.client
+        try:
+            client.transact_write_items(TransactItems=[
+                {"ConditionCheck": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": "COORDINATOR"},
+                    "ConditionExpression": "actor_id = :actor AND #token = :token AND #generation = :generation",
+                    "ExpressionAttributeNames": {"#token": "token", "#generation": "generation"},
+                    "ExpressionAttributeValues": {
+                        ":actor": coordinator_id,
+                        ":token": coordinator_token,
+                        ":generation": coordinator_generation,
+                    },
+                }},
+                {"ConditionCheck": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": record_id("REQUEST", request_id)},
+                    "ConditionExpression": "#state = :granted AND actor_id = :owner AND fencing = :fence",
+                    "ExpressionAttributeNames": {"#state": "state"},
+                    "ExpressionAttributeValues": {
+                        ":granted": "granted",
+                        ":owner": owner_id,
+                        ":fence": fencing,
+                    },
+                }},
+                {"Update": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": "LEASE"},
+                    "UpdateExpression": (
+                        "SET #state = :recovery, recovery_reason = :reason, recovery_at = :at, "
+                        "recovery_evidence = :evidence, recovery_id = :recovery_id"
+                    ),
+                    "ConditionExpression": (
+                        "#state = :held AND owner_id = :owner AND request_id = :request "
+                        "AND fencing = :fence AND #expires = :expected"
+                    ),
+                    "ExpressionAttributeNames": {"#state": "state", "#expires": "expires_at"},
+                    "ExpressionAttributeValues": {
+                        ":held": "held",
+                        ":recovery": "recovery_required",
+                        ":owner": owner_id,
+                        ":request": request_id,
+                        ":fence": fencing,
+                        ":expected": expected_expires_at,
+                        ":reason": reason,
+                        ":at": timestamp,
+                        ":evidence": evidence,
+                        ":recovery_id": recovery_id,
+                    },
+                }},
+                {"Put": {
+                    "TableName": self.table_name,
+                    "Item": audit_item,
+                    "ConditionExpression": "attribute_not_exists(record_id)",
+                }},
+            ])
+        except client.exceptions.TransactionCanceledException as exc:
+            raise CoordinationError(
+                "exact recovery conflicted with a changed coordinator, request, or lease"
+            ) from exc
+        return audit_item
 
     def complete_recovery(self, scope: str, coordinator_id: str, coordinator_token: str, evidence: dict[str, Any]) -> dict[str, Any]:
         """Clear an explicitly reviewed recovery state and return the lease to free."""
