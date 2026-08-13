@@ -78,12 +78,15 @@ class CoordinatorStore:
         coordinator = self._get(scope, "COORDINATOR")
         role_key = "COORDINATOR" if coordinator and coordinator.get("actor_id") == actor_id else record_id("WORKER", actor_id)
         item = self._get(scope, role_key)
+        lease_note = "; lease token was not checked" if lease_token else ""
         if not item:
-            raise CoordinationError("registration is missing")
+            raise CoordinationError(
+                f"registration is missing for actor {actor_id!r}; verify --actor-id{lease_note}"
+            )
         if item.get("token") != token:
             generation = item.get("generation", "unknown")
             raise CoordinationError(
-                f"registration token is stale; current generation is {generation}"
+                f"registration token is stale; current generation is {generation}{lease_note}"
             )
         timestamp = now()
         registration_update = {
@@ -236,8 +239,14 @@ class CoordinatorStore:
             raise CoordinationError("lease is missing; coordinator recovery may be required")
         if lease.get("state") != "held":
             raise CoordinationError(f"lease state is {lease.get('state', 'unknown')}; coordinator recovery is required")
-        if lease.get("owner_id") != actor_id or lease.get("lease_token") != lease_token:
-            raise CoordinationError("lease owner or token is stale")
+        if lease.get("owner_id") != actor_id:
+            raise CoordinationError(
+                f"lease is not held by actor {actor_id!r}; verify --actor-id"
+            )
+        if lease.get("lease_token") != lease_token:
+            raise CoordinationError(
+                f"lease token is stale for actor {actor_id!r}; use the exact token from the grant output"
+            )
         checked_at = now() if timestamp is None else timestamp
         if int(lease.get("expires_at", 0)) <= checked_at:
             raise CoordinationError(

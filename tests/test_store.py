@@ -83,8 +83,68 @@ def test_missing_registration_is_distinct_from_stale_token() -> None:
     table = FakeTable()
     store = CoordinatorStore("table", table=table)
 
-    with pytest.raises(CoordinationError, match="^registration is missing$"):
+    with pytest.raises(
+        CoordinationError,
+        match="^registration is missing for actor 'worker-a'; verify --actor-id$",
+    ):
         store.heartbeat("aurora", "worker-a", "unknown", "testing", "missing")
+
+
+def test_missing_registration_says_lease_token_was_not_checked() -> None:
+    table = FakeTable()
+    store = CoordinatorStore("table", table=table)
+    table.put_item(Item={
+        "scope": "aurora",
+        "record_id": "LEASE",
+        "state": "held",
+        "owner_id": "worker-a",
+        "lease_token": "lease-a",
+        "expires_at": 200,
+    })
+
+    with pytest.raises(
+        CoordinationError,
+        match=(
+            "^registration is missing for actor 'worker-typo'; verify --actor-id; "
+            "lease token was not checked$"
+        ),
+    ):
+        store.heartbeat(
+            "aurora",
+            "worker-typo",
+            "registration-a",
+            "testing",
+            "missing",
+            lease_token="lease-typo",
+        )
+
+    assert table.update_calls == []
+    assert table.meta.client.transact_calls == []
+
+
+def test_stale_registration_says_lease_token_was_not_checked() -> None:
+    table = FakeTable()
+    store = CoordinatorStore("table", table=table)
+    registration = store.register("aurora", "worker-a", "worker", "worker")
+
+    with pytest.raises(
+        CoordinationError,
+        match=(
+            f"^registration token is stale; current generation is {registration.generation}; "
+            "lease token was not checked$"
+        ),
+    ):
+        store.heartbeat(
+            "aurora",
+            "worker-a",
+            "stale-registration",
+            "testing",
+            "stale",
+            lease_token="lease-a",
+        )
+
+    assert table.update_calls == []
+    assert table.meta.client.transact_calls == []
 
 
 def test_worker_registration_is_scoped_by_actor() -> None:
@@ -226,6 +286,34 @@ def test_guard_authorization_reports_expired_held_lease_as_recovery_required() -
         store.require_active_lease("aurora", "worker-a", "lease-a", timestamp=100)
 
     assert table.get_item(Key={"scope": "aurora", "record_id": "LEASE"})["Item"]["state"] == "held"
+
+
+def test_lease_authorization_distinguishes_actor_from_token_mismatch() -> None:
+    table = FakeTable()
+    store = CoordinatorStore("table", table=table)
+    table.put_item(Item={
+        "scope": "aurora",
+        "record_id": "LEASE",
+        "state": "held",
+        "owner_id": "worker-a",
+        "lease_token": "lease-a",
+        "expires_at": 200,
+    })
+
+    with pytest.raises(
+        CoordinationError,
+        match="^lease is not held by actor 'worker-typo'; verify --actor-id$",
+    ):
+        store.require_active_lease("aurora", "worker-typo", "lease-a", timestamp=100)
+
+    with pytest.raises(
+        CoordinationError,
+        match=(
+            "^lease token is stale for actor 'worker-a'; "
+            "use the exact token from the grant output$"
+        ),
+    ):
+        store.require_active_lease("aurora", "worker-a", "lease-typo", timestamp=100)
 
 
 def test_recovery_atomically_checks_current_coordinator_and_held_lease() -> None:

@@ -123,6 +123,13 @@ which the coordinator manages as `registered` or `active`.
 remains accepted for compatibility. Registration, coordinator, and lease tokens are distinct and
 must not be substituted for one another.
 
+Treat actor IDs and tokens as exact opaque values: copy or reuse the machine-returned values from
+`register` and `grant`; never reconstruct them from a visible prefix or suffix. If registration
+validation fails, a lease-bearing heartbeat makes read-only registration lookups but performs no
+write and does not inspect the lease token. The error identifies the submitted actor and explicitly
+says when lease validation was not reached. After registration succeeds, lease errors distinguish
+an actor mismatch from a stale token without printing the token or the current owner.
+
 A heartbeat without `--lease-token` only reports registration liveness. With `--lease-token`, it
 also proves that the lease is held by the actor and has not expired. The registration and lease
 heartbeat timestamps update atomically. An expired held lease is not renewed and neither timestamp
