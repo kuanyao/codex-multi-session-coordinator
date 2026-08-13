@@ -7,11 +7,46 @@ import os
 import subprocess
 import sys
 import threading
+from decimal import Decimal
 from typing import Any
 
 from botocore.exceptions import ClientError
 
 from .store import CoordinationError, CoordinatorStore
+
+
+def reject_json_constant(constant: str) -> Any:
+    raise ValueError(f"non-standard JSON value {constant!r}")
+
+
+def json_object(value: str) -> dict[str, Any]:
+    """Parse one DynamoDB-safe JSON object for structured CLI metadata."""
+    try:
+        parsed = json.loads(
+            value,
+            parse_float=Decimal,
+            parse_constant=reject_json_constant,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            "must be a valid JSON object, for example "
+            "'{\"merge_revision\":\"abc123\",\"exclusive_operation_active\":false}'"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise argparse.ArgumentTypeError(
+            "must be a JSON object (an object begins with '{' and ends with '}')"
+        )
+    return parsed
+
+
+def add_evidence_argument(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--evidence",
+        type=json_object,
+        default={},
+        metavar="JSON_OBJECT",
+        help="structured release/recovery evidence as a valid JSON object (default: {})",
+    )
 
 
 def add_global_arguments(target: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
@@ -73,7 +108,7 @@ def parser() -> argparse.ArgumentParser:
     recover_worker_registration.add_argument("--expected-expires-at", type=int, required=True)
     recover_worker_registration.add_argument("--title", required=True)
     recover_worker_registration.add_argument("--reason", required=True)
-    recover_worker_registration.add_argument("--evidence", default="{}")
+    add_evidence_argument(recover_worker_registration)
     heartbeat = command_parser(commands, "heartbeat")
     heartbeat.add_argument("--actor-id", required=True)
     add_registration_token_argument(heartbeat)
@@ -90,7 +125,13 @@ def parser() -> argparse.ArgumentParser:
     request.add_argument("--actor-id", required=True)
     add_registration_token_argument(request)
     request.add_argument("--summary", required=True)
-    request.add_argument("--metadata", default="{}")
+    request.add_argument(
+        "--metadata",
+        type=json_object,
+        default={},
+        metavar="JSON_OBJECT",
+        help="request metadata as a valid JSON object (default: {})",
+    )
     grant = command_parser(commands, "grant")
     grant.add_argument("--coordinator-id", required=True)
     grant.add_argument("--coordinator-token", required=True)
@@ -106,12 +147,12 @@ def parser() -> argparse.ArgumentParser:
     extend.add_argument("--expected-expires-at", type=int, required=True)
     extend.add_argument("--ttl-seconds", type=int, required=True)
     extend.add_argument("--reason", required=True)
-    extend.add_argument("--evidence", default="{}")
+    add_evidence_argument(extend)
     release = command_parser(commands, "release")
     release.add_argument("--actor-id", required=True)
     release.add_argument("--lease-token", required=True)
     release.add_argument("--phase", default="complete")
-    release.add_argument("--evidence", default="{}")
+    add_evidence_argument(release)
     recover = command_parser(commands, "recover")
     recover.add_argument("--coordinator-id", required=True)
     recover.add_argument("--coordinator-token", required=True)
@@ -125,11 +166,11 @@ def parser() -> argparse.ArgumentParser:
     recover_exact.add_argument("--fencing", type=int, required=True)
     recover_exact.add_argument("--expected-expires-at", type=int, required=True)
     recover_exact.add_argument("--reason", required=True)
-    recover_exact.add_argument("--evidence", default="{}")
+    add_evidence_argument(recover_exact)
     complete_recovery = command_parser(commands, "complete-recovery")
     complete_recovery.add_argument("--coordinator-id", required=True)
     complete_recovery.add_argument("--coordinator-token", required=True)
-    complete_recovery.add_argument("--evidence", default="{}")
+    add_evidence_argument(complete_recovery)
     resume_recovery = command_parser(commands, "resume-recovery")
     resume_recovery.add_argument("--coordinator-id", required=True)
     resume_recovery.add_argument("--coordinator-token", required=True)
@@ -140,7 +181,7 @@ def parser() -> argparse.ArgumentParser:
     resume_recovery.add_argument("--expected-expires-at", type=int, required=True)
     resume_recovery.add_argument("--ttl-seconds", type=int, required=True)
     resume_recovery.add_argument("--reason", required=True)
-    resume_recovery.add_argument("--evidence", default="{}")
+    add_evidence_argument(resume_recovery)
     status = command_parser(commands, "status")
     status.add_argument("--pretty", action="store_true")
     guard = command_parser(commands, "guard")
@@ -185,12 +226,12 @@ def main() -> int:
                 args.expected_expires_at,
                 args.title,
                 args.reason,
-                json.loads(args.evidence),
+                args.evidence,
             ), True)
         elif args.command == "heartbeat":
             output(store.heartbeat(args.scope, args.actor_id, args.token, args.phase, args.message, args.lease_token), args.json)
         elif args.command == "request":
-            request_id = store.request(args.scope, args.actor_id, args.token, args.summary, json.loads(args.metadata))
+            request_id = store.request(args.scope, args.actor_id, args.token, args.summary, args.metadata)
             output({"request_id": request_id}, True)
         elif args.command == "grant":
             output(store.grant(args.scope, args.coordinator_id, args.coordinator_token, args.request_id, args.ttl_seconds), True)
@@ -206,10 +247,10 @@ def main() -> int:
                 args.expected_expires_at,
                 args.ttl_seconds,
                 args.reason,
-                json.loads(args.evidence),
+                args.evidence,
             ), True)
         elif args.command == "release":
-            output(store.release(args.scope, args.actor_id, args.lease_token, args.phase, json.loads(args.evidence)), args.json)
+            output(store.release(args.scope, args.actor_id, args.lease_token, args.phase, args.evidence), args.json)
         elif args.command == "recover":
             output(store.recover(args.scope, args.coordinator_id, args.coordinator_token, args.reason), args.json)
         elif args.command == "recover-exact":
@@ -223,10 +264,10 @@ def main() -> int:
                 args.fencing,
                 args.expected_expires_at,
                 args.reason,
-                json.loads(args.evidence),
+                args.evidence,
             ), True)
         elif args.command == "complete-recovery":
-            output(store.complete_recovery(args.scope, args.coordinator_id, args.coordinator_token, json.loads(args.evidence)), args.json)
+            output(store.complete_recovery(args.scope, args.coordinator_id, args.coordinator_token, args.evidence), args.json)
         elif args.command == "resume-recovery":
             output(store.resume_recovery(
                 args.scope,
@@ -239,7 +280,7 @@ def main() -> int:
                 args.expected_expires_at,
                 args.ttl_seconds,
                 args.reason,
-                json.loads(args.evidence),
+                args.evidence,
             ), True)
         elif args.command == "status":
             output(store.status(args.scope), True, args.pretty)

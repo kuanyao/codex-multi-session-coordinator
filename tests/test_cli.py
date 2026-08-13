@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+from decimal import Decimal
+
+import pytest
 
 from botocore.exceptions import ClientError
 
@@ -91,6 +94,43 @@ def test_recover_worker_registration_parses_exact_active_identity() -> None:
     assert arguments.expected_generation == "generation-a"
     assert arguments.fencing == 17
     assert arguments.expected_expires_at == 200
+
+
+def test_release_parses_evidence_as_json_object() -> None:
+    arguments = parser().parse_args([
+        "release",
+        "--actor-id", "worker-a",
+        "--lease-token", "lease-a",
+        "--evidence", '{"merge_revision":"abc123","stable":true,"ratio":1.5}',
+    ])
+
+    assert arguments.evidence == {
+        "merge_revision": "abc123",
+        "stable": True,
+        "ratio": Decimal("1.5"),
+    }
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    ["plain concise evidence", '"a JSON string"', "[1,2]", '{"ratio":NaN}'],
+)
+def test_release_rejects_non_object_evidence_before_execution(
+    evidence: str, capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        parser().parse_args([
+            "release",
+            "--actor-id", "worker-a",
+            "--lease-token", "lease-a",
+            "--evidence", evidence,
+        ])
+
+    assert error.value.code == 2
+    diagnostic = capsys.readouterr().err
+    assert "argument --evidence" in diagnostic
+    assert "must be a" in diagnostic
+    assert "JSON object" in diagnostic
 
 
 def test_heartbeat_accepts_phase() -> None:

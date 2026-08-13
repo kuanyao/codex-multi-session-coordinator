@@ -618,6 +618,8 @@ class CoordinatorStore:
         }
 
     def release(self, scope: str, actor_id: str, lease_token: str, phase: str, evidence: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(evidence, dict):
+            raise CoordinationError("release evidence must be a JSON object")
         lease = self._get(scope, "LEASE")
         if not lease or lease.get("owner_id") != actor_id or lease.get("lease_token") != lease_token or lease.get("state") != "held":
             raise CoordinationError("lease is missing, stale, or not owned by this actor")

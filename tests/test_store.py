@@ -251,6 +251,14 @@ def test_worker_registration_recovery_refuses_expired_lease() -> None:
     assert table.meta.client.transact_calls == []
 
 
+def test_release_refuses_non_object_evidence_before_reading_lease() -> None:
+    table = FakeTable()
+    store = CoordinatorStore("table", table=table)
+
+    with pytest.raises(CoordinationError, match="release evidence must be a JSON object"):
+        store.release("aurora", "worker-a", "lease-a", "complete", "plain evidence")  # type: ignore[arg-type]
+
+
 def test_coordinator_heartbeat_aliases_registration_token() -> None:
     table = FakeTable()
     store = CoordinatorStore("table", table=table)

@@ -221,6 +221,11 @@ Release only after the coordinator policy says the shared environment is safe:
   --evidence '{"merge_revision":"...","beta_run":"..."}'
 ```
 
+`--evidence` must be one valid JSON object, not a plain evidence sentence. Object keys are strings;
+values may be JSON strings, integers or decimals, booleans, nulls, arrays, or nested objects. Quote
+the entire object for the shell as shown above. Invalid JSON is rejected by argument parsing before
+the coordinator store is opened, and the diagnostic includes a valid example.
+
 After the command succeeds, the worker must explicitly notify the coordinator (or the owning
 task) with `RELEASE_INTEGRATION_LEASE`, including the lease ID, final main/dev/beta revisions,
 successful workflow URL, test and cleanup results, and confirmation that no exclusive operation
