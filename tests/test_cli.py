@@ -19,6 +19,56 @@ def heartbeat_arguments(phase_option: str, value: str):
     ])
 
 
+def test_heartbeat_accepts_registration_token_with_post_command_globals() -> None:
+    arguments = parser().parse_args([
+        "heartbeat",
+        "--table",
+        "codex-multi-session-coordinator-dev",
+        "--region",
+        "us-east-1",
+        "--scope",
+        "aurora",
+        "--actor-id",
+        "aurora-integration-coordinator-a81f",
+        "--registration-token",
+        "registration-a",
+        "--phase",
+        "testing-dev",
+        "--message",
+        "coordinator checking active integration",
+    ])
+
+    assert arguments.table == "codex-multi-session-coordinator-dev"
+    assert arguments.region == "us-east-1"
+    assert arguments.scope == "aurora"
+    assert arguments.token == "registration-a"
+    assert arguments.phase == "testing-dev"
+
+
+def test_request_accepts_registration_token_aliases() -> None:
+    preferred = parser().parse_args([
+        "request",
+        "--actor-id",
+        "worker-a",
+        "--registration-token",
+        "registration-a",
+        "--summary",
+        "integration work",
+    ])
+    compatible = parser().parse_args([
+        "request",
+        "--actor-id",
+        "worker-a",
+        "--token",
+        "registration-b",
+        "--summary",
+        "integration work",
+    ])
+
+    assert preferred.token == "registration-a"
+    assert compatible.token == "registration-b"
+
+
 def test_heartbeat_accepts_phase() -> None:
     arguments = heartbeat_arguments("--phase", "awaiting-review")
 

@@ -48,7 +48,7 @@ The worker queues a request:
 ```bash
 codex-coordinator request \
   --actor-id <worker-task-id> \
-  --token <worker-registration-token> \
+  --registration-token <worker-registration-token> \
   --summary "Deploy and validate PR 501"
 ```
 
@@ -74,7 +74,7 @@ lease tokens.
 ```bash
 codex-coordinator heartbeat \
   --actor-id <worker-task-id> \
-  --token <worker-registration-token> \
+  --registration-token <worker-registration-token> \
   --phase testing-dev \
   --message "integration assertions running" \
   --lease-token <lease-token>
@@ -85,6 +85,10 @@ codex-coordinator status --pretty
 `--phase` is the preferred heartbeat option. `--state` is accepted as a compatibility alias and
 stores the same workflow-phase value. It does not directly set the registration's durable `state`,
 which the coordinator manages as `registered` or `active`.
+
+`--registration-token` is the preferred option for `heartbeat` and `request`; the shorter `--token`
+remains accepted for compatibility. Registration, coordinator, and lease tokens are distinct and
+must not be substituted for one another.
 
 A heartbeat without `--lease-token` only reports registration liveness. With `--lease-token`, it
 also proves that the lease is held by the actor and has not expired. The registration and lease

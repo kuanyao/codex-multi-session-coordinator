@@ -44,6 +44,16 @@ def command_parser(commands: Any, name: str) -> argparse.ArgumentParser:
     return command
 
 
+def add_registration_token_argument(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--registration-token",
+        "--token",
+        dest="token",
+        required=True,
+        help="actor registration token (--token is a compatibility alias)",
+    )
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description="Coordinate exclusive access to shared work resources.")
     add_global_arguments(root)
@@ -54,7 +64,7 @@ def parser() -> argparse.ArgumentParser:
     register.add_argument("--title", required=True)
     heartbeat = command_parser(commands, "heartbeat")
     heartbeat.add_argument("--actor-id", required=True)
-    heartbeat.add_argument("--token", required=True)
+    add_registration_token_argument(heartbeat)
     heartbeat.add_argument(
         "--phase",
         "--state",
@@ -66,7 +76,7 @@ def parser() -> argparse.ArgumentParser:
     heartbeat.add_argument("--lease-token")
     request = command_parser(commands, "request")
     request.add_argument("--actor-id", required=True)
-    request.add_argument("--token", required=True)
+    add_registration_token_argument(request)
     request.add_argument("--summary", required=True)
     request.add_argument("--metadata", default="{}")
     grant = command_parser(commands, "grant")
