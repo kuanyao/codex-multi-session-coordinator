@@ -78,8 +78,13 @@ class CoordinatorStore:
         coordinator = self._get(scope, "COORDINATOR")
         role_key = "COORDINATOR" if coordinator and coordinator.get("actor_id") == actor_id else record_id("WORKER", actor_id)
         item = self._get(scope, role_key)
-        if not item or item.get("token") != token:
-            raise CoordinationError("registration is missing or stale")
+        if not item:
+            raise CoordinationError("registration is missing")
+        if item.get("token") != token:
+            generation = item.get("generation", "unknown")
+            raise CoordinationError(
+                f"registration token is stale; current generation is {generation}"
+            )
         timestamp = now()
         registration_update = {
             "Key": {"scope": scope, "record_id": role_key},

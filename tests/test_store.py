@@ -53,6 +53,40 @@ def test_new_coordinator_replaces_previous_registration() -> None:
     assert second.token != first.token
 
 
+def test_stale_coordinator_token_reports_current_generation_without_touching_lease() -> None:
+    table = FakeTable()
+    store = CoordinatorStore("table", table=table)
+    first = store.register("aurora", "coord-a", "coordinator", "coordinator")
+    table.put_item(Item={
+        "scope": "aurora",
+        "record_id": "LEASE",
+        "state": "held",
+        "owner_id": "worker-a",
+        "lease_token": "lease-a",
+        "fencing": 16,
+        "expires_at": 200,
+    })
+    current = store.register("aurora", "coord-a", "coordinator", "coordinator")
+    lease_before = table.get_item(Key={"scope": "aurora", "record_id": "LEASE"})["Item"]
+
+    with pytest.raises(
+        CoordinationError,
+        match=f"registration token is stale; current generation is {current.generation}",
+    ):
+        store.heartbeat("aurora", "coord-a", first.token, "testing", "stale")
+
+    assert table.update_calls == []
+    assert table.get_item(Key={"scope": "aurora", "record_id": "LEASE"})["Item"] == lease_before
+
+
+def test_missing_registration_is_distinct_from_stale_token() -> None:
+    table = FakeTable()
+    store = CoordinatorStore("table", table=table)
+
+    with pytest.raises(CoordinationError, match="^registration is missing$"):
+        store.heartbeat("aurora", "worker-a", "unknown", "testing", "missing")
+
+
 def test_worker_registration_is_scoped_by_actor() -> None:
     table = FakeTable()
     store = CoordinatorStore("table", table=table)

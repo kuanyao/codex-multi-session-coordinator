@@ -23,7 +23,8 @@ codex-coordinator guard \
 ## Register
 
 Coordinator registration replaces any prior coordinator registration. Save the returned token in
-the coordinator session only; it is not committed to the repository.
+the coordinator session only; it is not committed to the repository. Save the returned generation
+with it so status can identify which credential is current after context loss or replacement.
 
 ```bash
 codex-coordinator register \
@@ -68,6 +69,38 @@ operations. A worker that is told to wait ends its turn; it does not poll contin
 
 Registration tokens are only printed by `register`; `status` deliberately redacts registration and
 lease tokens.
+
+### Recover a lost coordinator registration token
+
+If a coordinator token is lost or a heartbeat reports it as stale, first use `status --pretty` and
+record the current coordinator actor/generation and the complete lease identity. Registering the
+same coordinator actor replaces only the `COORDINATOR` record; it does not release, renew, recover,
+or otherwise modify a held lease, its owner, or its fencing number.
+
+Run `register` exactly once and privately retain both returned `token` and `generation`:
+
+```bash
+codex-coordinator register \
+  --role coordinator \
+  --actor-id <coordinator-task-id> \
+  --title "Aurora integration coordinator"
+```
+
+Re-read `status --pretty` and confirm the coordinator has the returned generation while the entire
+lease identity is unchanged. Then heartbeat with the newly returned token and no lease token:
+
+```bash
+codex-coordinator heartbeat \
+  --actor-id <coordinator-task-id> \
+  --registration-token <new-coordinator-registration-token> \
+  --phase <current-phase> \
+  --message "coordinator registration recovered"
+```
+
+If the generation changes again unexpectedly, stop instead of repeatedly registering: another
+coordinator registration is replacing this one. A coordinator registration heartbeat never proves
+or extends worker lease ownership; the worker continues using its existing registration and lease
+tokens.
 
 ## Status and release
 
