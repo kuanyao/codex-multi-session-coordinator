@@ -79,6 +79,13 @@ codex-coordinator release \
   --evidence '{"merge_revision":"...","beta_run":"..."}'
 ```
 
+After the command succeeds, the worker must explicitly notify the coordinator (or the owning
+task) with `RELEASE_INTEGRATION_LEASE`, including the lease ID, final main/dev/beta revisions,
+successful workflow URL, test and cleanup results, and confirmation that no exclusive operation
+remains. The release command is the durable state transition; the notification closes the
+conversational handoff. If the notification channel is unavailable, report that failure and leave
+the durable release evidence queryable for coordinator verification.
+
 ## Guard a command
 
 The guard checks the current owner and token before starting the child process:
