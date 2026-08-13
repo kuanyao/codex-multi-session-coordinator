@@ -27,7 +27,13 @@ def parser() -> argparse.ArgumentParser:
     heartbeat = commands.add_parser("heartbeat")
     heartbeat.add_argument("--actor-id", required=True)
     heartbeat.add_argument("--token", required=True)
-    heartbeat.add_argument("--phase", required=True)
+    heartbeat.add_argument(
+        "--phase",
+        "--state",
+        dest="phase",
+        required=True,
+        help="workflow phase to report (--state is a compatibility alias)",
+    )
     heartbeat.add_argument("--message", default="")
     heartbeat.add_argument("--lease-token")
     request = commands.add_parser("request")

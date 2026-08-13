@@ -69,6 +69,10 @@ codex-coordinator heartbeat \
 codex-coordinator status --pretty
 ```
 
+`--phase` is the preferred heartbeat option. `--state` is accepted as a compatibility alias and
+stores the same workflow-phase value. It does not directly set the registration's durable `state`,
+which the coordinator manages as `registered` or `active`.
+
 Release only after the coordinator policy says the shared environment is safe:
 
 ```bash
