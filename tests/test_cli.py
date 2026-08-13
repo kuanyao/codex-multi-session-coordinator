@@ -31,6 +31,57 @@ def test_heartbeat_accepts_state_as_phase_alias() -> None:
     assert arguments.phase == "waiting"
 
 
+def test_guard_accepts_global_options_after_subcommand() -> None:
+    arguments = parser().parse_args([
+        "guard",
+        "--table",
+        "coordinator-table",
+        "--scope",
+        "aurora",
+        "--region",
+        "us-east-1",
+        "--actor-id",
+        "worker-a",
+        "--lease-token",
+        "lease-a",
+        "--",
+        "provider-retry",
+        "--ticker",
+        "AAPL",
+    ])
+
+    assert arguments.table == "coordinator-table"
+    assert arguments.scope == "aurora"
+    assert arguments.region == "us-east-1"
+    assert arguments.actor_id == "worker-a"
+    assert arguments.lease_token == "lease-a"
+    assert arguments.command_args == ["--", "provider-retry", "--ticker", "AAPL"]
+
+
+def test_global_options_work_before_or_after_non_guard_subcommand() -> None:
+    before = parser().parse_args([
+        "--table",
+        "before-table",
+        "--scope",
+        "before-scope",
+        "--json",
+        "status",
+        "--pretty",
+    ])
+    after = parser().parse_args([
+        "status",
+        "--table",
+        "after-table",
+        "--scope",
+        "after-scope",
+        "--pretty",
+    ])
+
+    assert (before.table, before.scope) == ("before-table", "before-scope")
+    assert before.json is True
+    assert (after.table, after.scope) == ("after-table", "after-scope")
+
+
 def test_guard_surfaces_expiry_and_does_not_run_command(monkeypatch, capsys) -> None:
     class ExpiredLeaseStore:
         def __init__(self, table_name, region):

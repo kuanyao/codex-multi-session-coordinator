@@ -7,6 +7,19 @@ export CODEX_COORDINATOR_TABLE=codex-multi-session-coordinator-dev
 export CODEX_COORDINATOR_SCOPE=aurora
 ```
 
+The global options `--table`, `--region`, `--scope`, and `--json` are accepted either before or
+after the subcommand. For `guard`, place `--` after all coordinator options and immediately before
+the child command so child options are passed through unchanged:
+
+```bash
+codex-coordinator guard \
+  --table codex-multi-session-coordinator-dev \
+  --scope aurora \
+  --actor-id <worker-task-id> \
+  --lease-token <lease-token> \
+  -- <child-command> --child-option
+```
+
 ## Register
 
 Coordinator registration replaces any prior coordinator registration. Save the returned token in

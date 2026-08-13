@@ -12,18 +12,47 @@ from typing import Any
 from .store import CoordinationError, CoordinatorStore
 
 
+def add_global_arguments(target: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
+    default = argparse.SUPPRESS if suppress_defaults else None
+    target.add_argument(
+        "--table",
+        default=default if suppress_defaults else os.environ.get("CODEX_COORDINATOR_TABLE"),
+        required=False,
+        help="DynamoDB table (or CODEX_COORDINATOR_TABLE)",
+    )
+    target.add_argument(
+        "--region",
+        default=default if suppress_defaults else os.environ.get("AWS_REGION"),
+        help="AWS region (or AWS_REGION)",
+    )
+    target.add_argument(
+        "--scope",
+        default=default if suppress_defaults else os.environ.get("CODEX_COORDINATOR_SCOPE", "default"),
+        help="coordination scope (or CODEX_COORDINATOR_SCOPE; default: default)",
+    )
+    target.add_argument(
+        "--json",
+        action="store_true",
+        default=default if suppress_defaults else False,
+        help="emit JSON output where supported",
+    )
+
+
+def command_parser(commands: Any, name: str) -> argparse.ArgumentParser:
+    command = commands.add_parser(name)
+    add_global_arguments(command, suppress_defaults=True)
+    return command
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description="Coordinate exclusive access to shared work resources.")
-    root.add_argument("--table", default=os.environ.get("CODEX_COORDINATOR_TABLE"), required=False)
-    root.add_argument("--region", default=os.environ.get("AWS_REGION"))
-    root.add_argument("--scope", default=os.environ.get("CODEX_COORDINATOR_SCOPE", "default"))
-    root.add_argument("--json", action="store_true")
+    add_global_arguments(root)
     commands = root.add_subparsers(dest="command", required=True)
-    register = commands.add_parser("register")
+    register = command_parser(commands, "register")
     register.add_argument("--role", choices=["worker", "coordinator"], required=True)
     register.add_argument("--actor-id", required=True)
     register.add_argument("--title", required=True)
-    heartbeat = commands.add_parser("heartbeat")
+    heartbeat = command_parser(commands, "heartbeat")
     heartbeat.add_argument("--actor-id", required=True)
     heartbeat.add_argument("--token", required=True)
     heartbeat.add_argument(
@@ -35,32 +64,32 @@ def parser() -> argparse.ArgumentParser:
     )
     heartbeat.add_argument("--message", default="")
     heartbeat.add_argument("--lease-token")
-    request = commands.add_parser("request")
+    request = command_parser(commands, "request")
     request.add_argument("--actor-id", required=True)
     request.add_argument("--token", required=True)
     request.add_argument("--summary", required=True)
     request.add_argument("--metadata", default="{}")
-    grant = commands.add_parser("grant")
+    grant = command_parser(commands, "grant")
     grant.add_argument("--coordinator-id", required=True)
     grant.add_argument("--coordinator-token", required=True)
     grant.add_argument("--request-id", required=True)
     grant.add_argument("--ttl-seconds", type=int, default=3600)
-    release = commands.add_parser("release")
+    release = command_parser(commands, "release")
     release.add_argument("--actor-id", required=True)
     release.add_argument("--lease-token", required=True)
     release.add_argument("--phase", default="complete")
     release.add_argument("--evidence", default="{}")
-    recover = commands.add_parser("recover")
+    recover = command_parser(commands, "recover")
     recover.add_argument("--coordinator-id", required=True)
     recover.add_argument("--coordinator-token", required=True)
     recover.add_argument("--reason", required=True)
-    complete_recovery = commands.add_parser("complete-recovery")
+    complete_recovery = command_parser(commands, "complete-recovery")
     complete_recovery.add_argument("--coordinator-id", required=True)
     complete_recovery.add_argument("--coordinator-token", required=True)
     complete_recovery.add_argument("--evidence", default="{}")
-    status = commands.add_parser("status")
+    status = command_parser(commands, "status")
     status.add_argument("--pretty", action="store_true")
-    guard = commands.add_parser("guard")
+    guard = command_parser(commands, "guard")
     guard.add_argument("--actor-id", required=True)
     guard.add_argument("--lease-token", required=True)
     guard.add_argument("command_args", nargs=argparse.REMAINDER)
