@@ -81,17 +81,17 @@ class CoordinatorStore:
         if not item or item.get("token") != token:
             raise CoordinationError("registration is missing or stale")
         timestamp = now()
-        self.table.update_item(
-            Key={"scope": scope, "record_id": role_key},
-            UpdateExpression="SET last_seen_at = :seen, #phase = :phase, #message = :message, #state = :state, #ttl = :ttl",
-            ExpressionAttributeNames={
+        registration_update = {
+            "Key": {"scope": scope, "record_id": role_key},
+            "UpdateExpression": "SET last_seen_at = :seen, #phase = :phase, #message = :message, #state = :state, #ttl = :ttl",
+            "ExpressionAttributeNames": {
                 "#phase": "phase",
                 "#message": "message",
                 "#state": "state",
                 "#token": "token",
                 "#ttl": "ttl",
             },
-            ExpressionAttributeValues={
+            "ExpressionAttributeValues": {
                 ":seen": timestamp,
                 ":phase": phase,
                 ":message": message,
@@ -99,16 +99,33 @@ class CoordinatorStore:
                 ":ttl": timestamp + 86400,
                 ":token": token,
             },
-            ConditionExpression="#token = :token",
-        )
+            "ConditionExpression": "#token = :token",
+        }
         if lease_token:
-            self.table.update_item(
-                Key={"scope": scope, "record_id": "LEASE"},
-                UpdateExpression="SET last_heartbeat_at = :seen",
-                ExpressionAttributeValues={":seen": timestamp, ":token": lease_token, ":owner": actor_id, ":held": "held"},
-                ConditionExpression="lease_token = :token AND owner_id = :owner AND #state = :held",
-                ExpressionAttributeNames={"#state": "state"},
-            )
+            self.require_active_lease(scope, actor_id, lease_token, timestamp)
+            client = self.table.meta.client
+            lease_update = {
+                "Key": {"scope": scope, "record_id": "LEASE"},
+                "UpdateExpression": "SET last_heartbeat_at = :seen",
+                "ExpressionAttributeValues": {
+                    ":seen": timestamp,
+                    ":token": lease_token,
+                    ":owner": actor_id,
+                    ":held": "held",
+                },
+                "ConditionExpression": "lease_token = :token AND owner_id = :owner AND #state = :held AND #expires > :seen",
+                "ExpressionAttributeNames": {"#state": "state", "#expires": "expires_at"},
+            }
+            try:
+                client.transact_write_items(TransactItems=[
+                    {"Update": {"TableName": self.table_name, **registration_update}},
+                    {"Update": {"TableName": self.table_name, **lease_update}},
+                ])
+            except client.exceptions.TransactionCanceledException as exc:
+                self.require_active_lease(scope, actor_id, lease_token, now())
+                raise CoordinationError("heartbeat conflicted with a changed registration or lease") from exc
+        else:
+            self.table.update_item(**registration_update)
         return self.status(scope)
 
     def request(self, scope: str, actor_id: str, token: str, summary: str, metadata: dict[str, Any] | None = None) -> str:
@@ -201,6 +218,28 @@ class CoordinatorStore:
         """Return the raw lease for an authorization check; never print this directly."""
         return self._get(scope, "LEASE")
 
+    def require_active_lease(
+        self,
+        scope: str,
+        actor_id: str,
+        lease_token: str,
+        timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        """Return a currently usable lease or raise a precise fail-closed error."""
+        lease = self.current_lease(scope)
+        if not lease:
+            raise CoordinationError("lease is missing; coordinator recovery may be required")
+        if lease.get("state") != "held":
+            raise CoordinationError(f"lease state is {lease.get('state', 'unknown')}; coordinator recovery is required")
+        if lease.get("owner_id") != actor_id or lease.get("lease_token") != lease_token:
+            raise CoordinationError("lease owner or token is stale")
+        checked_at = now() if timestamp is None else timestamp
+        if int(lease.get("expires_at", 0)) <= checked_at:
+            raise CoordinationError(
+                f"lease expired at {lease.get('expires_at', 0)}; coordinator recovery is required"
+            )
+        return lease
+
     @staticmethod
     def _redact(item: dict[str, Any]) -> dict[str, Any]:
         safe = dict(item)
@@ -212,13 +251,32 @@ class CoordinatorStore:
         coordinator = self._get(scope, "COORDINATOR")
         if not coordinator or coordinator.get("actor_id") != coordinator_id or coordinator.get("token") != coordinator_token:
             raise CoordinationError("coordinator registration is missing or stale")
-        self.table.update_item(
-            Key={"scope": scope, "record_id": "LEASE"},
-            UpdateExpression="SET #state = :recovery, recovery_reason = :reason, recovery_at = :at",
-            ExpressionAttributeNames={"#state": "state"},
-            ExpressionAttributeValues={":recovery": "recovery_required", ":reason": reason, ":at": now(), ":held": "held"},
-            ConditionExpression="attribute_exists(record_id) AND #state = :held",
-        )
+        client = self.table.meta.client
+        try:
+            client.transact_write_items(TransactItems=[
+                {"ConditionCheck": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": "COORDINATOR"},
+                    "ConditionExpression": "actor_id = :actor AND #token = :token",
+                    "ExpressionAttributeNames": {"#token": "token"},
+                    "ExpressionAttributeValues": {":actor": coordinator_id, ":token": coordinator_token},
+                }},
+                {"Update": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": "LEASE"},
+                    "UpdateExpression": "SET #state = :recovery, recovery_reason = :reason, recovery_at = :at",
+                    "ExpressionAttributeNames": {"#state": "state"},
+                    "ExpressionAttributeValues": {
+                        ":recovery": "recovery_required",
+                        ":reason": reason,
+                        ":at": now(),
+                        ":held": "held",
+                    },
+                    "ConditionExpression": "attribute_exists(record_id) AND #state = :held",
+                }},
+            ])
+        except client.exceptions.TransactionCanceledException as exc:
+            raise CoordinationError("recovery conflicted with a changed coordinator or lease") from exc
         return self.status(scope)
 
     def complete_recovery(self, scope: str, coordinator_id: str, coordinator_token: str, evidence: dict[str, Any]) -> dict[str, Any]:
@@ -226,11 +284,30 @@ class CoordinatorStore:
         coordinator = self._get(scope, "COORDINATOR")
         if not coordinator or coordinator.get("actor_id") != coordinator_id or coordinator.get("token") != coordinator_token:
             raise CoordinationError("coordinator registration is missing or stale")
-        self.table.update_item(
-            Key={"scope": scope, "record_id": "LEASE"},
-            UpdateExpression="SET #state = :free, recovery_completed_at = :at, recovery_evidence = :evidence REMOVE recovery_reason",
-            ExpressionAttributeNames={"#state": "state"},
-            ExpressionAttributeValues={":free": "free", ":at": now(), ":evidence": evidence, ":recovery": "recovery_required"},
-            ConditionExpression="#state = :recovery",
-        )
+        client = self.table.meta.client
+        try:
+            client.transact_write_items(TransactItems=[
+                {"ConditionCheck": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": "COORDINATOR"},
+                    "ConditionExpression": "actor_id = :actor AND #token = :token",
+                    "ExpressionAttributeNames": {"#token": "token"},
+                    "ExpressionAttributeValues": {":actor": coordinator_id, ":token": coordinator_token},
+                }},
+                {"Update": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": "LEASE"},
+                    "UpdateExpression": "SET #state = :free, recovery_completed_at = :at, recovery_evidence = :evidence REMOVE recovery_reason",
+                    "ExpressionAttributeNames": {"#state": "state"},
+                    "ExpressionAttributeValues": {
+                        ":free": "free",
+                        ":at": now(),
+                        ":evidence": evidence,
+                        ":recovery": "recovery_required",
+                    },
+                    "ConditionExpression": "#state = :recovery",
+                }},
+            ])
+        except client.exceptions.TransactionCanceledException as exc:
+            raise CoordinationError("recovery completion conflicted with a changed coordinator or lease") from exc
         return self.status(scope)

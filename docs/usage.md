@@ -73,6 +73,11 @@ codex-coordinator status --pretty
 stores the same workflow-phase value. It does not directly set the registration's durable `state`,
 which the coordinator manages as `registered` or `active`.
 
+A heartbeat without `--lease-token` only reports registration liveness. With `--lease-token`, it
+also proves that the lease is held by the actor and has not expired. The registration and lease
+heartbeat timestamps update atomically. An expired held lease is not renewed and neither timestamp
+advances; the command instead reports that explicit coordinator recovery is required.
+
 Release only after the coordinator policy says the shared environment is safe:
 
 ```bash
@@ -106,8 +111,10 @@ AWS cannot be reliably cancelled by this wrapper.
 
 ## Recovery
 
-Expiration never authorizes automatic takeover. The coordinator first inspects the environment and
-then marks recovery required:
+Expiration never makes a lease free and never authorizes automatic takeover. It disables worker
+heartbeat and guarded commands while the durable `held` record continues to block new grants. The
+coordinator first confirms with `status --pretty` that the expected fencing/owner record is still
+held, inspects the external environment for in-flight mutations, and then marks recovery required:
 
 ```bash
 codex-coordinator recover \

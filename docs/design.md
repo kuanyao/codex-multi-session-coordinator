@@ -26,12 +26,16 @@ registration/request cleanup. TTL is not used to authorize lease takeover.
 ## Conditional transitions
 
 Lease grant is conditional on the current coordinator token, queued request state, and a free lease.
-The lease token and monotonically increasing fencing number identify the grant. Release and heartbeat
-require the current owner and exact lease token. A stale worker cannot release a replacement lease.
+The lease token and monotonically increasing fencing number identify the grant. Release requires the
+current owner and exact lease token. Lease-bearing heartbeat and guarded commands additionally require
+an unexpired lease. Their checks use the same fail-closed authorization semantics. A lease-bearing
+heartbeat updates the registration and lease atomically, so an expired attempt advances neither record.
+A stale worker cannot release a replacement lease.
 
 Coordinator replacement is deliberate. The new coordinator can inspect the old lease and put it into
 explicit recovery. It cannot silently take over a held lease merely because its expiration time has
-passed.
+passed. Recovery and recovery completion atomically verify the current coordinator token alongside
+the expected lease state, so a replaced coordinator cannot make a lease grantable.
 
 ## Failure modes and controls
 
@@ -43,7 +47,7 @@ passed.
 | Worker loses messaging | Durable status remains queryable; worker reports the problem locally. |
 | Coordinator crashes | New registration replaces it; recovery is explicit and verified. |
 | Command bypasses guard | The CLI cannot prevent every external AWS mutation; policy and IAM remain required. |
-| Lease expires during a long test | Expiry blocks new grants; it does not authorize takeover. |
+| Lease expires during a long test | Worker heartbeat and guard fail with recovery guidance; the durable held lease still blocks grants and does not authorize takeover. |
 | DynamoDB is unavailable | Commands fail closed; no mutation authorization is inferred. |
 
 ## Why no S3
