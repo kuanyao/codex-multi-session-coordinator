@@ -73,6 +73,26 @@ def test_request_accepts_registration_token_aliases() -> None:
     assert compatible.token == "registration-b"
 
 
+def test_recover_worker_registration_parses_exact_active_identity() -> None:
+    arguments = parser().parse_args([
+        "recover-worker-registration",
+        "--actor-id", "worker-a",
+        "--lease-token", "lease-a",
+        "--expected-generation", "generation-a",
+        "--request-id", "request-a",
+        "--fencing", "17",
+        "--expected-expires-at", "200",
+        "--title", "Product site worker",
+        "--reason", "saved registration token is stale",
+        "--evidence", '{"mutation_after_error":false}',
+    ])
+
+    assert arguments.command == "recover-worker-registration"
+    assert arguments.expected_generation == "generation-a"
+    assert arguments.fencing == 17
+    assert arguments.expected_expires_at == 200
+
+
 def test_heartbeat_accepts_phase() -> None:
     arguments = heartbeat_arguments("--phase", "awaiting-review")
 

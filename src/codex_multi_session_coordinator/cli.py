@@ -64,6 +64,16 @@ def parser() -> argparse.ArgumentParser:
     register.add_argument("--role", choices=["worker", "coordinator"], required=True)
     register.add_argument("--actor-id", required=True)
     register.add_argument("--title", required=True)
+    recover_worker_registration = command_parser(commands, "recover-worker-registration")
+    recover_worker_registration.add_argument("--actor-id", required=True)
+    recover_worker_registration.add_argument("--lease-token", required=True)
+    recover_worker_registration.add_argument("--expected-generation", required=True)
+    recover_worker_registration.add_argument("--request-id", required=True)
+    recover_worker_registration.add_argument("--fencing", type=int, required=True)
+    recover_worker_registration.add_argument("--expected-expires-at", type=int, required=True)
+    recover_worker_registration.add_argument("--title", required=True)
+    recover_worker_registration.add_argument("--reason", required=True)
+    recover_worker_registration.add_argument("--evidence", default="{}")
     heartbeat = command_parser(commands, "heartbeat")
     heartbeat.add_argument("--actor-id", required=True)
     add_registration_token_argument(heartbeat)
@@ -164,6 +174,19 @@ def main() -> int:
         if args.command == "register":
             result = store.register(args.scope, args.actor_id, args.role, args.title)
             output(result.__dict__, True)
+        elif args.command == "recover-worker-registration":
+            output(store.recover_worker_registration(
+                args.scope,
+                args.actor_id,
+                args.lease_token,
+                args.expected_generation,
+                args.request_id,
+                args.fencing,
+                args.expected_expires_at,
+                args.title,
+                args.reason,
+                json.loads(args.evidence),
+            ), True)
         elif args.command == "heartbeat":
             output(store.heartbeat(args.scope, args.actor_id, args.token, args.phase, args.message, args.lease_token), args.json)
         elif args.command == "request":

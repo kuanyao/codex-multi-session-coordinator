@@ -158,6 +158,99 @@ def test_worker_registration_is_scoped_by_actor() -> None:
     assert first.token != second.token
 
 
+def test_worker_registration_recovery_preserves_exact_active_lease() -> None:
+    table = FakeTable()
+    store = CoordinatorStore("table", table=table)
+    worker = store.register("aurora", "worker-a", "worker", "worker")
+    table.put_item(Item={
+        "scope": "aurora",
+        "record_id": "REQUEST#request-a",
+        "request_id": "request-a",
+        "actor_id": "worker-a",
+        "state": "granted",
+        "fencing": 17,
+    })
+    table.put_item(Item={
+        "scope": "aurora",
+        "record_id": "LEASE",
+        "state": "held",
+        "owner_id": "worker-a",
+        "lease_token": "lease-a",
+        "request_id": "request-a",
+        "fencing": 17,
+        "granted_at": 50,
+        "expires_at": 200,
+    })
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("codex_multi_session_coordinator.store.now", lambda: 100)
+        result = store.recover_worker_registration(
+            "aurora",
+            "worker-a",
+            "lease-a",
+            worker.generation,
+            "request-a",
+            17,
+            200,
+            "worker",
+            "saved registration token is stale",
+            {"mutation_after_error": False},
+        )
+
+    assert result["previous_generation"] == worker.generation
+    assert result["generation"] != worker.generation
+    assert result["token"] != worker.token
+    transaction = table.meta.client.transact_calls[0]["TransactItems"]
+    assert len(transaction) == 4
+    worker_update = transaction[0]["Update"]
+    lease_check = transaction[1]["ConditionCheck"]
+    request_check = transaction[2]["ConditionCheck"]
+    audit_put = transaction[3]["Put"]
+    assert worker_update["Key"] == {"scope": "aurora", "record_id": "WORKER#worker-a"}
+    assert "#generation = :expected" in worker_update["ConditionExpression"]
+    assert lease_check["Key"] == {"scope": "aurora", "record_id": "LEASE"}
+    assert "lease_token = :lease" in lease_check["ConditionExpression"]
+    assert "fencing = :fence" in lease_check["ConditionExpression"]
+    assert request_check["ExpressionAttributeValues"][":granted"] == "granted"
+    assert audit_put["Item"]["evidence"] == {"mutation_after_error": False}
+    assert all("Update" not in item or item["Update"]["Key"]["record_id"] != "LEASE" for item in transaction)
+    assert all("Update" not in item or item["Update"]["Key"]["record_id"] != "REQUEST#request-a" for item in transaction)
+
+
+def test_worker_registration_recovery_refuses_expired_lease() -> None:
+    table = FakeTable()
+    store = CoordinatorStore("table", table=table)
+    worker = store.register("aurora", "worker-a", "worker", "worker")
+    table.put_item(Item={
+        "scope": "aurora",
+        "record_id": "REQUEST#request-a",
+        "request_id": "request-a",
+        "actor_id": "worker-a",
+        "state": "granted",
+        "fencing": 17,
+    })
+    table.put_item(Item={
+        "scope": "aurora",
+        "record_id": "LEASE",
+        "state": "held",
+        "owner_id": "worker-a",
+        "lease_token": "lease-a",
+        "request_id": "request-a",
+        "fencing": 17,
+        "expires_at": 100,
+    })
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("codex_multi_session_coordinator.store.now", lambda: 100)
+        with pytest.raises(CoordinationError, match="coordinator recovery is required first"):
+            store.recover_worker_registration(
+                "aurora", "worker-a", "lease-a", worker.generation,
+                "request-a", 17, 100, "worker", "reason", {},
+            )
+
+    assert table.meta.client.transact_calls == []
+
+
 def test_coordinator_heartbeat_aliases_registration_token() -> None:
     table = FakeTable()
     store = CoordinatorStore("table", table=table)

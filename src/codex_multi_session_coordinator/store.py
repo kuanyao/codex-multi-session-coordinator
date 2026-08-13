@@ -78,6 +78,151 @@ class CoordinatorStore:
         self.table.put_item(Item=item)
         return Registration(scope, actor_id, role, token, generation)
 
+    def recover_worker_registration(
+        self,
+        scope: str,
+        actor_id: str,
+        lease_token: str,
+        expected_generation: str,
+        request_id: str,
+        fencing: int,
+        expected_expires_at: int,
+        title: str,
+        reason: str,
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Rotate a stale worker registration while preserving one exact active lease."""
+        if not reason.strip():
+            raise CoordinationError("worker registration recovery reason is required")
+        if not isinstance(evidence, dict):
+            raise CoordinationError("worker registration recovery evidence must be a JSON object")
+        worker_key = record_id("WORKER", actor_id)
+        worker = self._get(scope, worker_key)
+        lease = self._get(scope, "LEASE")
+        request = self._get(scope, record_id("REQUEST", request_id))
+        if (
+            not worker
+            or worker.get("actor_id") != actor_id
+            or worker.get("role") != "worker"
+            or worker.get("generation") != expected_generation
+        ):
+            raise CoordinationError("worker registration generation changed; recovery refused")
+        if (
+            not lease
+            or lease.get("state") != "held"
+            or lease.get("owner_id") != actor_id
+            or lease.get("lease_token") != lease_token
+            or lease.get("request_id") != request_id
+            or int(lease.get("fencing", -1)) != fencing
+            or int(lease.get("expires_at", -1)) != expected_expires_at
+        ):
+            raise CoordinationError("active lease identity or token changed; registration recovery refused")
+        if not request or request.get("state") != "granted" or request.get("actor_id") != actor_id:
+            raise CoordinationError("granted request identity changed; registration recovery refused")
+        timestamp = now()
+        if expected_expires_at <= timestamp:
+            raise CoordinationError(
+                f"lease expired at {expected_expires_at}; coordinator recovery is required first"
+            )
+        token = str(uuid.uuid4())
+        generation = str(uuid.uuid4())
+        recovery_id = str(uuid.uuid4())
+        audit_item = {
+            "scope": scope,
+            "record_id": record_id("REGISTRATION_RECOVERY", recovery_id),
+            "recovery_id": recovery_id,
+            "actor_id": actor_id,
+            "previous_generation": expected_generation,
+            "generation": generation,
+            "request_id": request_id,
+            "fencing": fencing,
+            "expires_at": expected_expires_at,
+            "recovered_at": timestamp,
+            "reason": reason,
+            "evidence": evidence,
+        }
+        client = self.table.meta.client
+        try:
+            client.transact_write_items(TransactItems=[
+                {"Update": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": worker_key},
+                    "UpdateExpression": (
+                        "SET #token = :token, #generation = :generation, #title = :title, "
+                        "registered_at = :at, last_seen_at = :at, #state = :registered, "
+                        "#ttl = :ttl, previous_generation = :expected, "
+                        "registration_recovery_id = :recovery_id"
+                    ),
+                    "ConditionExpression": (
+                        "actor_id = :actor AND #role = :worker AND #generation = :expected"
+                    ),
+                    "ExpressionAttributeNames": {
+                        "#token": "token",
+                        "#generation": "generation",
+                        "#title": "title",
+                        "#state": "state",
+                        "#ttl": "ttl",
+                        "#role": "role",
+                    },
+                    "ExpressionAttributeValues": {
+                        ":token": token,
+                        ":generation": generation,
+                        ":title": title,
+                        ":at": timestamp,
+                        ":registered": "registered",
+                        ":ttl": timestamp + 86400,
+                        ":expected": expected_generation,
+                        ":recovery_id": recovery_id,
+                        ":actor": actor_id,
+                        ":worker": "worker",
+                    },
+                }},
+                {"ConditionCheck": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": "LEASE"},
+                    "ConditionExpression": (
+                        "#state = :held AND owner_id = :actor AND lease_token = :lease "
+                        "AND request_id = :request AND fencing = :fence "
+                        "AND #expires = :expected_expires AND #expires > :now"
+                    ),
+                    "ExpressionAttributeNames": {"#state": "state", "#expires": "expires_at"},
+                    "ExpressionAttributeValues": {
+                        ":held": "held",
+                        ":actor": actor_id,
+                        ":lease": lease_token,
+                        ":request": request_id,
+                        ":fence": fencing,
+                        ":expected_expires": expected_expires_at,
+                        ":now": timestamp,
+                    },
+                }},
+                {"ConditionCheck": {
+                    "TableName": self.table_name,
+                    "Key": {"scope": scope, "record_id": record_id("REQUEST", request_id)},
+                    "ConditionExpression": "#state = :granted AND actor_id = :actor AND fencing = :fence",
+                    "ExpressionAttributeNames": {"#state": "state"},
+                    "ExpressionAttributeValues": {
+                        ":granted": "granted",
+                        ":actor": actor_id,
+                        ":fence": fencing,
+                    },
+                }},
+                {"Put": {
+                    "TableName": self.table_name,
+                    "Item": audit_item,
+                    "ConditionExpression": "attribute_not_exists(record_id)",
+                }},
+            ])
+        except client.exceptions.TransactionCanceledException as exc:
+            raise CoordinationError(
+                "worker registration recovery conflicted with a changed registration, request, or lease"
+            ) from exc
+        return {
+            **audit_item,
+            "role": "worker",
+            "token": token,
+        }
+
     def heartbeat(
         self,
         scope: str,

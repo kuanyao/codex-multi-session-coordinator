@@ -21,6 +21,8 @@ All records use `scope` as the partition key and `record_id` as the sort key:
 - `LEASE`: current state, owner, opaque lease token, fencing number, phase, expiry, and evidence.
 - `EXTENSION#<id>`, `RECOVERY#<id>`, and `RECOVERY_RESUME#<id>`: append-only evidence for
   coordinator-authorized continuity transitions.
+- `REGISTRATION_RECOVERY#<id>`: append-only evidence for an active worker registration rotation
+  authenticated and pinned by the existing exact lease.
 
 The table uses on-demand capacity, AWS-managed encryption, point-in-time recovery, and TTL for
 registration/request cleanup. TTL is not used to authorize lease takeover.
@@ -39,6 +41,10 @@ current coordinator token/generation, granted request, lease owner/request/fenci
 expiry. It changes only expiry plus audit pointers. Post-expiry continuity requires explicit exact
 recovery and recovery resumption; resumption retains the granted request and owner while rotating
 the token and incrementing fencing, so queued requests cannot overtake the interrupted transaction.
+An active worker with stale local registration material can rotate only its worker registration by
+proving the exact unexpired lease token/generation/request/fence/expiry. The transaction condition-
+checks the lease and request without updating them, so registration recovery cannot change ownership
+or extend authorization.
 
 Coordinator replacement is deliberate. The new coordinator can inspect the old lease and put it into
 explicit recovery. It cannot silently take over a held lease merely because its expiration time has

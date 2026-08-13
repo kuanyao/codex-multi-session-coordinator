@@ -87,6 +87,38 @@ operations. A worker that is told to wait ends its turn; it does not poll contin
 Registration tokens are only printed by `register`; `status` deliberately redacts registration and
 lease tokens.
 
+### Recover a stale active worker registration
+
+A worker registration token and a lease token are independent. If a lease-bearing heartbeat reports
+a stale registration and explicitly says the lease token was not checked, do not retry and do not
+run unconditional `register` while an active lease is held. The reported generation is the current
+worker generation observed by that failed read, but a later concurrent rotation can still change it.
+
+Re-read status and record the exact worker generation plus lease owner, request, fencing, state, and
+expiry. If the lease is still unexpired and held by that worker, recover the registration using the
+existing private lease token and the complete durable identity:
+
+```bash
+./.venv/bin/codex-coordinator recover-worker-registration \
+  --actor-id <worker-task-id> \
+  --lease-token <current-lease-token> \
+  --expected-generation <current-worker-generation> \
+  --request-id <current-request-id> \
+  --fencing <current-fencing> \
+  --expected-expires-at <current-expires-at> \
+  --title "<worker title>" \
+  --reason "saved worker registration token is stale" \
+  --evidence '{"mutation_after_error":false}'
+```
+
+The operation atomically rotates only the worker registration token/generation, verifies the exact
+unexpired held lease token/owner/request/fence/expiry and granted request, and writes an append-only
+`REGISTRATION_RECOVERY#...` record. It does not update the lease or request. Privately retain the
+returned registration token and generation together, then re-read status and require every lease
+and request field to be unchanged. Heartbeat once with the new registration token and the same lease
+token. If the lease expired first, use coordinator exact recovery/resumption before recovering the
+worker registration with the new fence/token/expiry.
+
 ### Recover a lost coordinator registration token
 
 If a coordinator token is lost or a heartbeat reports it as stale, first use `status --pretty` and
