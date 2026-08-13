@@ -210,6 +210,49 @@ The guard checks the current owner and token before starting the child process:
 The guard is a fail-closed convenience, not a replacement for IAM. A process already accepted by
 AWS cannot be reliably cancelled by this wrapper.
 
+### Separate coordinator and child AWS credentials
+
+The coordinator's DynamoDB lease check and the guarded child may require different AWS accounts.
+Never prefix the whole coordinator command with the child's `AWS_PROFILE`: boto3 would use that
+profile for the parent DynamoDB lookup before the child is authorized. Use `--child-aws-profile`
+before `--`; guard copies the parent environment only after the lease check succeeds and changes
+`AWS_PROFILE` in that child copy. The coordinator process environment is not changed.
+
+One guarded Route53 mutation using management-account credentials:
+
+```bash
+./.venv/bin/codex-coordinator guard \
+  --table codex-multi-session-coordinator-dev \
+  --region us-east-1 \
+  --scope aurora \
+  --actor-id <worker-task-id> \
+  --lease-token <lease-token> \
+  --child-aws-profile aurora-management \
+  -- \
+  aws route53 change-resource-record-sets \
+    --hosted-zone-id <hosted-zone-id> \
+    --change-batch file://<change-batch.json>
+```
+
+Capture the returned change ID only after that command succeeds. A waiter is a separate guarded
+child and uses the same child-only profile pattern:
+
+```bash
+./.venv/bin/codex-coordinator guard \
+  --table codex-multi-session-coordinator-dev \
+  --region us-east-1 \
+  --scope aurora \
+  --actor-id <worker-task-id> \
+  --lease-token <lease-token> \
+  --child-aws-profile aurora-management \
+  -- \
+  aws route53 wait resource-record-sets-changed --id <non-empty-change-id>
+```
+
+Do not run the waiter or `get-change` when the mutation failed or the change ID is empty. A missing
+coordinator DynamoDB table now produces a concise parent-credential diagnostic instead of a
+botocore traceback.
+
 ## Recovery
 
 Expiration never makes a lease free and never authorizes automatic takeover. It disables worker

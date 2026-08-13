@@ -9,6 +9,8 @@ import sys
 import threading
 from typing import Any
 
+from botocore.exceptions import ClientError
+
 from .store import CoordinationError, CoordinatorStore
 
 
@@ -134,6 +136,13 @@ def parser() -> argparse.ArgumentParser:
     guard = command_parser(commands, "guard")
     guard.add_argument("--actor-id", required=True)
     guard.add_argument("--lease-token", required=True)
+    guard.add_argument(
+        "--child-aws-profile",
+        help=(
+            "set AWS_PROFILE only for the guarded child after lease authorization; "
+            "the coordinator store keeps the parent credential context"
+        ),
+    )
     guard.add_argument("command_args", nargs=argparse.REMAINDER)
     return root
 
@@ -216,11 +225,32 @@ def main() -> int:
             if not command:
                 raise CoordinationError("guard requires a command after --")
             store.require_active_lease(args.scope, args.actor_id, args.lease_token)
-            result = subprocess.run(command, check=False)
+            child_environment = None
+            if args.child_aws_profile:
+                child_environment = os.environ.copy()
+                child_environment["AWS_PROFILE"] = args.child_aws_profile
+            result = subprocess.run(command, check=False, env=child_environment)
             return result.returncode
         return 0
     except (CoordinationError, ValueError, json.JSONDecodeError) as exc:
         print(f"coordination error: {exc}", file=sys.stderr)
+        return 1
+    except ClientError as exc:
+        error = exc.response.get("Error", {})
+        if error.get("Code") == "ResourceNotFoundException":
+            print(
+                "coordination error: DynamoDB table "
+                f"{args.table!r} was not found in the coordinator parent AWS credential context; "
+                "do not prefix the whole command with a child AWS_PROFILE; for guard, use "
+                "--child-aws-profile before --",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"coordination AWS error: {error.get('Code', 'ClientError')}: "
+                f"{error.get('Message', str(exc))}",
+                file=sys.stderr,
+            )
         return 1
 
 

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+
+from botocore.exceptions import ClientError
+
 from codex_multi_session_coordinator import cli
 from codex_multi_session_coordinator.cli import parser
 from codex_multi_session_coordinator.store import CoordinationError
@@ -151,6 +155,22 @@ def test_guard_accepts_global_options_after_subcommand() -> None:
     assert arguments.command_args == ["--", "provider-retry", "--ticker", "AAPL"]
 
 
+def test_guard_accepts_child_only_aws_profile() -> None:
+    arguments = parser().parse_args([
+        "guard",
+        "--actor-id", "worker-a",
+        "--lease-token", "lease-a",
+        "--child-aws-profile", "aurora-management",
+        "--",
+        "aws", "route53", "change-resource-record-sets",
+    ])
+
+    assert arguments.child_aws_profile == "aurora-management"
+    assert arguments.command_args == [
+        "--", "aws", "route53", "change-resource-record-sets",
+    ]
+
+
 def test_global_options_work_before_or_after_non_guard_subcommand() -> None:
     before = parser().parse_args([
         "--table",
@@ -214,3 +234,67 @@ def test_guard_surfaces_expiry_and_does_not_run_command(monkeypatch, capsys) -> 
     assert cli.main() == 1
     assert not command_ran
     assert "coordination error: lease expired at 99; coordinator recovery is required" in capsys.readouterr().err
+
+
+def test_guard_applies_aws_profile_only_to_child(monkeypatch) -> None:
+    class ActiveLeaseStore:
+        def __init__(self, table_name, region):
+            assert os.environ.get("AWS_PROFILE") == "coordinator-parent"
+
+        def require_active_lease(self, scope, actor_id, lease_token):
+            assert os.environ.get("AWS_PROFILE") == "coordinator-parent"
+
+    observed_environment = None
+
+    def record_run(command, check, env):
+        nonlocal observed_environment
+        observed_environment = env
+        assert command == ["aws", "route53", "list-hosted-zones"]
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setenv("AWS_PROFILE", "coordinator-parent")
+    monkeypatch.setattr(cli, "CoordinatorStore", ActiveLeaseStore)
+    monkeypatch.setattr(cli.subprocess, "run", record_run)
+    monkeypatch.setattr(cli.sys, "argv", [
+        "codex-coordinator",
+        "--table", "table",
+        "guard",
+        "--actor-id", "worker-a",
+        "--lease-token", "lease-a",
+        "--child-aws-profile", "aurora-management",
+        "--",
+        "aws", "route53", "list-hosted-zones",
+    ])
+
+    assert cli.main() == 0
+    assert os.environ["AWS_PROFILE"] == "coordinator-parent"
+    assert observed_environment is not None
+    assert observed_environment["AWS_PROFILE"] == "aurora-management"
+
+
+def test_resource_not_found_explains_parent_credential_context(monkeypatch, capsys) -> None:
+    class MissingTableStore:
+        def __init__(self, table_name, region):
+            pass
+
+        def status(self, scope):
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "ResourceNotFoundException",
+                        "Message": "Requested resource not found",
+                    }
+                },
+                "Query",
+            )
+
+    monkeypatch.setattr(cli, "CoordinatorStore", MissingTableStore)
+    monkeypatch.setattr(cli.sys, "argv", [
+        "codex-coordinator", "--table", "coordinator-table", "status",
+    ])
+
+    assert cli.main() == 1
+    error = capsys.readouterr().err
+    assert "coordinator parent AWS credential context" in error
+    assert "--child-aws-profile before --" in error
+    assert "Traceback" not in error
