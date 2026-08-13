@@ -9,14 +9,16 @@ coordinator session reports communication failures in its own task window.
 
 ```bash
 python3.13 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
+./.venv/bin/python -m pip install -e .
 export CODEX_COORDINATOR_TABLE=codex-multi-session-coordinator-dev
 export CODEX_COORDINATOR_SCOPE=aurora
 
-codex-coordinator register --role coordinator --actor-id <coordinator-id> --title "Aurora coordinator"
-codex-coordinator register --role worker --actor-id <worker-id> --title "Price ingestion"
+./.venv/bin/codex-coordinator register --role coordinator --actor-id <coordinator-id> --title "Aurora coordinator"
+./.venv/bin/codex-coordinator register --role worker --actor-id <worker-id> --title "Price ingestion"
 ```
+
+All repository examples use the explicit `.venv` executable. This works without activating the
+virtual environment and avoids relying on a shell's `PATH`. Run commands from the repository root.
 
 See [docs/usage.md](docs/usage.md) for the worker/coordinator flow and [docs/design.md](docs/design.md)
 for the failure model. The CDK stack is under `infra/cdk`.

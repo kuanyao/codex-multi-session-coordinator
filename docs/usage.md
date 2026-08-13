@@ -1,5 +1,22 @@
 # Usage
 
+Run these commands from the repository root. Every example uses
+`./.venv/bin/codex-coordinator` explicitly so it does not depend on virtual-environment activation
+or a shell's `PATH`. Before a stateful operation, a safe local preflight is:
+
+```bash
+test -x ./.venv/bin/codex-coordinator
+./.venv/bin/codex-coordinator --help >/dev/null
+```
+
+If the executable is absent, create/install the environment before retrying; do not substitute a
+different global executable:
+
+```bash
+python3.13 -m venv .venv
+./.venv/bin/python -m pip install -e .
+```
+
 Set the table and namespace for every command:
 
 ```bash
@@ -12,7 +29,7 @@ after the subcommand. For `guard`, place `--` after all coordinator options and 
 the child command so child options are passed through unchanged:
 
 ```bash
-codex-coordinator guard \
+./.venv/bin/codex-coordinator guard \
   --table codex-multi-session-coordinator-dev \
   --scope aurora \
   --actor-id <worker-task-id> \
@@ -27,7 +44,7 @@ the coordinator session only; it is not committed to the repository. Save the re
 with it so status can identify which credential is current after context loss or replacement.
 
 ```bash
-codex-coordinator register \
+./.venv/bin/codex-coordinator register \
   --role coordinator \
   --actor-id <coordinator-task-id> \
   --title "Aurora integration coordinator"
@@ -36,7 +53,7 @@ codex-coordinator register \
 Register a worker:
 
 ```bash
-codex-coordinator register \
+./.venv/bin/codex-coordinator register \
   --role worker \
   --actor-id <worker-task-id> \
   --title "Price ingestion"
@@ -47,7 +64,7 @@ codex-coordinator register \
 The worker queues a request:
 
 ```bash
-codex-coordinator request \
+./.venv/bin/codex-coordinator request \
   --actor-id <worker-task-id> \
   --registration-token <worker-registration-token> \
   --summary "Deploy and validate PR 501"
@@ -56,8 +73,8 @@ codex-coordinator request \
 The coordinator inspects status and grants the request:
 
 ```bash
-codex-coordinator status --pretty
-codex-coordinator grant \
+./.venv/bin/codex-coordinator status --pretty
+./.venv/bin/codex-coordinator grant \
   --coordinator-id <coordinator-task-id> \
   --coordinator-token <coordinator-registration-token> \
   --request-id <request-id> \
@@ -80,7 +97,7 @@ or otherwise modify a held lease, its owner, or its fencing number.
 Run `register` exactly once and privately retain both returned `token` and `generation`:
 
 ```bash
-codex-coordinator register \
+./.venv/bin/codex-coordinator register \
   --role coordinator \
   --actor-id <coordinator-task-id> \
   --title "Aurora integration coordinator"
@@ -90,7 +107,7 @@ Re-read `status --pretty` and confirm the coordinator has the returned generatio
 lease identity is unchanged. Then heartbeat with the newly returned token and no lease token:
 
 ```bash
-codex-coordinator heartbeat \
+./.venv/bin/codex-coordinator heartbeat \
   --actor-id <coordinator-task-id> \
   --registration-token <new-coordinator-registration-token> \
   --phase <current-phase> \
@@ -105,14 +122,14 @@ tokens.
 ## Status and release
 
 ```bash
-codex-coordinator heartbeat \
+./.venv/bin/codex-coordinator heartbeat \
   --actor-id <worker-task-id> \
   --registration-token <worker-registration-token> \
   --phase testing-dev \
   --message "integration assertions running" \
   --lease-token <lease-token>
 
-codex-coordinator status --pretty
+./.venv/bin/codex-coordinator status --pretty
 ```
 
 `--phase` is the preferred heartbeat option. `--state` is accepted as a compatibility alias and
@@ -138,7 +155,7 @@ advances; the command instead reports that explicit coordinator recovery is requ
 Release only after the coordinator policy says the shared environment is safe:
 
 ```bash
-codex-coordinator release \
+./.venv/bin/codex-coordinator release \
   --actor-id <worker-task-id> \
   --lease-token <lease-token> \
   --phase beta-green \
@@ -157,7 +174,7 @@ the durable release evidence queryable for coordinator verification.
 The guard checks the current owner and token before starting the child process:
 
 ```bash
-codex-coordinator guard \
+./.venv/bin/codex-coordinator guard \
   --actor-id <worker-task-id> \
   --lease-token <lease-token> \
   -- scripts/build.sh
@@ -174,7 +191,7 @@ coordinator first confirms with `status --pretty` that the expected fencing/owne
 held, inspects the external environment for in-flight mutations, and then marks recovery required:
 
 ```bash
-codex-coordinator recover \
+./.venv/bin/codex-coordinator recover \
   --coordinator-id <coordinator-task-id> \
   --coordinator-token <coordinator-registration-token> \
   --reason "worker disappeared after dev deployment; AWS state verified"
@@ -183,7 +200,7 @@ codex-coordinator recover \
 After inspecting the environment, explicitly clear the block with evidence:
 
 ```bash
-codex-coordinator complete-recovery \
+./.venv/bin/codex-coordinator complete-recovery \
   --coordinator-id <coordinator-task-id> \
   --coordinator-token <coordinator-registration-token> \
   --evidence '{"verified_by":"...","environment":"clean"}'
