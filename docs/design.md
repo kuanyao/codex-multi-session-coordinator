@@ -23,6 +23,8 @@ All records use `scope` as the partition key and `record_id` as the sort key:
   coordinator-authorized continuity transitions.
 - `REGISTRATION_RECOVERY#<id>`: append-only evidence for an active worker registration rotation
   authenticated and pinned by the existing exact lease.
+- `COORDINATOR_REGISTRATION_RECOVERY#<id>`: append-only evidence for a lost coordinator
+  registration rotation pinned to the current coordinator generation and exact held transaction.
 
 The table uses on-demand capacity, AWS-managed encryption, point-in-time recovery, and TTL for
 registration/request cleanup. TTL is not used to authorize lease takeover.
@@ -50,6 +52,11 @@ Coordinator replacement is deliberate. The new coordinator can inspect the old l
 explicit recovery. It cannot silently take over a held lease merely because its expiration time has
 passed. Recovery and recovery completion atomically verify the current coordinator token alongside
 the expected lease state, so a replaced coordinator cannot make a lease grantable.
+When coordinator secret material is lost, the AWS credential context is the remaining registration
+authority. The audited recovery command cannot prove possession of the lost token; instead it
+requires the same durable coordinator actor/generation and exact held owner/request/fence/expiry,
+changes only the coordinator registration, and records the authority basis and evidence. The newly
+returned token/generation must then authenticate all lease recovery transitions.
 
 ## Failure modes and controls
 

@@ -96,6 +96,30 @@ def test_recover_worker_registration_parses_exact_active_identity() -> None:
     assert arguments.expected_expires_at == 200
 
 
+def test_recover_coordinator_registration_parses_exact_continuity_identity() -> None:
+    arguments = parser().parse_args([
+        "recover-coordinator-registration",
+        "--actor-id", "coord-a",
+        "--expected-generation", "generation-a",
+        "--owner-id", "worker-a",
+        "--request-id", "request-a",
+        "--fencing", "19",
+        "--expected-expires-at", "200",
+        "--expected-granted-at", "100",
+        "--expected-queued-request-id", "request-b",
+        "--title", "Aurora coordinator",
+        "--reason", "private registration material was lost",
+        "--evidence", '{"ephemeral_store_missing":true}',
+    ])
+
+    assert arguments.command == "recover-coordinator-registration"
+    assert arguments.expected_generation == "generation-a"
+    assert arguments.owner_id == "worker-a"
+    assert arguments.fencing == 19
+    assert arguments.expected_granted_at == 100
+    assert arguments.expected_queued_request_id == "request-b"
+
+
 def test_release_parses_evidence_as_json_object() -> None:
     arguments = parser().parse_args([
         "release",

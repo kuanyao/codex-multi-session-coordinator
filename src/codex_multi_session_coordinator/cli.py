@@ -99,6 +99,18 @@ def parser() -> argparse.ArgumentParser:
     register.add_argument("--role", choices=["worker", "coordinator"], required=True)
     register.add_argument("--actor-id", required=True)
     register.add_argument("--title", required=True)
+    recover_coordinator_registration = command_parser(commands, "recover-coordinator-registration")
+    recover_coordinator_registration.add_argument("--actor-id", required=True)
+    recover_coordinator_registration.add_argument("--expected-generation", required=True)
+    recover_coordinator_registration.add_argument("--owner-id", required=True)
+    recover_coordinator_registration.add_argument("--request-id", required=True)
+    recover_coordinator_registration.add_argument("--fencing", type=int, required=True)
+    recover_coordinator_registration.add_argument("--expected-expires-at", type=int, required=True)
+    recover_coordinator_registration.add_argument("--expected-granted-at", type=int, required=True)
+    recover_coordinator_registration.add_argument("--expected-queued-request-id")
+    recover_coordinator_registration.add_argument("--title", required=True)
+    recover_coordinator_registration.add_argument("--reason", required=True)
+    add_evidence_argument(recover_coordinator_registration)
     recover_worker_registration = command_parser(commands, "recover-worker-registration")
     recover_worker_registration.add_argument("--actor-id", required=True)
     recover_worker_registration.add_argument("--lease-token", required=True)
@@ -215,6 +227,21 @@ def main() -> int:
         if args.command == "register":
             result = store.register(args.scope, args.actor_id, args.role, args.title)
             output(result.__dict__, True)
+        elif args.command == "recover-coordinator-registration":
+            output(store.recover_coordinator_registration(
+                args.scope,
+                args.actor_id,
+                args.expected_generation,
+                args.owner_id,
+                args.request_id,
+                args.fencing,
+                args.expected_expires_at,
+                args.expected_granted_at,
+                args.expected_queued_request_id,
+                args.title,
+                args.reason,
+                args.evidence,
+            ), True)
         elif args.command == "recover-worker-registration":
             output(store.recover_worker_registration(
                 args.scope,

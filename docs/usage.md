@@ -122,21 +122,35 @@ worker registration with the new fence/token/expiry.
 ### Recover a lost coordinator registration token
 
 If a coordinator token is lost or a heartbeat reports it as stale, first use `status --pretty` and
-record the current coordinator actor/generation and the complete lease identity. Registering the
-same coordinator actor replaces only the `COORDINATOR` record; it does not release, renew, recover,
-or otherwise modify a held lease, its owner, or its fencing number.
+record the current coordinator actor/generation and the complete lease and granted-request identity.
+Do not use unconditional `register` while a lease is held. Because the lost token cannot authenticate
+its own replacement, the caller's AWS credential context is the remaining registration authority.
+Use the audited command to bind that authority to the exact durable continuity record.
 
-Run `register` exactly once and privately retain both returned `token` and `generation`:
+Run the following exactly once and privately retain both returned `token` and `generation`:
 
 ```bash
-./.venv/bin/codex-coordinator register \
-  --role coordinator \
+./.venv/bin/codex-coordinator recover-coordinator-registration \
   --actor-id <coordinator-task-id> \
-  --title "Aurora integration coordinator"
+  --expected-generation <current-coordinator-generation> \
+  --owner-id <current-lease-owner> \
+  --request-id <current-request-id> \
+  --fencing <current-fencing> \
+  --expected-expires-at <current-expires-at> \
+  --expected-granted-at <current-granted-at> \
+  --expected-queued-request-id <next-queued-request-id> \
+  --title "Aurora integration coordinator" \
+  --reason "private coordinator registration material was lost" \
+  --evidence '{"ephemeral_store_missing":true}'
 ```
 
-Re-read `status --pretty` and confirm the coordinator has the returned generation while the entire
-lease identity is unchanged. Then heartbeat with the newly returned token and no lease token:
+The transaction requires the current coordinator actor/generation, exact held lease
+owner/request/fence/expiry/grant time, matching granted request, and—when supplied—the expected
+next request still being queued. It changes only the coordinator
+registration and writes `COORDINATOR_REGISTRATION_RECOVERY#...`; it does not update the lease,
+request, grant time, or queue. Re-read `status --pretty` and confirm the coordinator has the returned
+generation while the entire lease/request identity is unchanged. Then heartbeat with the newly
+returned token and no lease token:
 
 ```bash
 ./.venv/bin/codex-coordinator heartbeat \

@@ -158,6 +158,107 @@ def test_worker_registration_is_scoped_by_actor() -> None:
     assert first.token != second.token
 
 
+def test_coordinator_registration_recovery_preserves_exact_held_transaction() -> None:
+    table = FakeTable()
+    store = CoordinatorStore("table", table=table)
+    coordinator = store.register("aurora", "coord-a", "coordinator", "coordinator")
+    table.put_item(Item={
+        "scope": "aurora",
+        "record_id": "REQUEST#request-a",
+        "request_id": "request-a",
+        "actor_id": "worker-a",
+        "state": "granted",
+        "fencing": 19,
+        "granted_at": 40,
+    })
+    table.put_item(Item={
+        "scope": "aurora",
+        "record_id": "LEASE",
+        "state": "held",
+        "owner_id": "worker-a",
+        "lease_token": "lease-a",
+        "request_id": "request-a",
+        "fencing": 19,
+        "granted_at": 40,
+        "expires_at": 90,
+    })
+    table.put_item(Item={
+        "scope": "aurora",
+        "record_id": "REQUEST#request-b",
+        "request_id": "request-b",
+        "actor_id": "worker-b",
+        "state": "queued",
+    })
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("codex_multi_session_coordinator.store.now", lambda: 100)
+        result = store.recover_coordinator_registration(
+            "aurora",
+            "coord-a",
+            coordinator.generation,
+            "worker-a",
+            "request-a",
+            19,
+            90,
+            40,
+            "request-b",
+            "coordinator",
+            "private registration material was lost",
+            {"ephemeral_store_missing": True},
+        )
+
+    assert result["previous_generation"] == coordinator.generation
+    assert result["generation"] != coordinator.generation
+    assert result["token"] != coordinator.token
+    transaction = table.meta.client.transact_calls[0]["TransactItems"]
+    assert len(transaction) == 5
+    coordinator_update = transaction[0]["Update"]
+    lease_check = transaction[1]["ConditionCheck"]
+    request_check = transaction[2]["ConditionCheck"]
+    queue_check = transaction[3]["ConditionCheck"]
+    audit_put = transaction[4]["Put"]
+    assert coordinator_update["Key"] == {"scope": "aurora", "record_id": "COORDINATOR"}
+    assert "#generation = :expected" in coordinator_update["ConditionExpression"]
+    assert lease_check["Key"] == {"scope": "aurora", "record_id": "LEASE"}
+    assert lease_check["ExpressionAttributeValues"][":fence"] == 19
+    assert request_check["ExpressionAttributeValues"][":granted"] == "granted"
+    assert queue_check["Key"] == {"scope": "aurora", "record_id": "REQUEST#request-b"}
+    assert queue_check["ExpressionAttributeValues"][":queued"] == "queued"
+    assert audit_put["Item"]["evidence"] == {"ephemeral_store_missing": True}
+    assert all("Update" not in item or item["Update"]["Key"]["record_id"] != "LEASE" for item in transaction)
+    assert all("Update" not in item or item["Update"]["Key"]["record_id"] != "REQUEST#request-a" for item in transaction)
+
+
+def test_coordinator_registration_recovery_refuses_changed_lease_before_transaction() -> None:
+    table = FakeTable()
+    store = CoordinatorStore("table", table=table)
+    coordinator = store.register("aurora", "coord-a", "coordinator", "coordinator")
+    table.put_item(Item={
+        "scope": "aurora",
+        "record_id": "REQUEST#request-a",
+        "actor_id": "worker-a",
+        "state": "granted",
+        "fencing": 19,
+    })
+    table.put_item(Item={
+        "scope": "aurora",
+        "record_id": "LEASE",
+        "state": "held",
+        "owner_id": "worker-a",
+        "request_id": "request-a",
+        "fencing": 20,
+        "expires_at": 90,
+    })
+
+    with pytest.raises(CoordinationError, match="held lease identity, grant time, or expected expiry changed"):
+        store.recover_coordinator_registration(
+            "aurora", "coord-a", coordinator.generation, "worker-a", "request-a",
+            19, 90, 40, None, "coordinator", "reason", {},
+        )
+
+    assert table.meta.client.transact_calls == []
+
+
 def test_worker_registration_recovery_preserves_exact_active_lease() -> None:
     table = FakeTable()
     store = CoordinatorStore("table", table=table)
